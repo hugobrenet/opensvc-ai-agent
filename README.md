@@ -12,15 +12,36 @@ providers and OpenSVC MCP tools.
 The implementation provides a health endpoint and a request-scoped MCP
 Streamable HTTP client. The client can list and call MCP tools while delegating
 the caller's OpenSVC Bearer JWT. Provider-neutral LLM contracts describe text
-messages, tools, tool calls, tool results, streaming events, and token usage.
-LLM protocol adapters, agent orchestration, the ask API, sessions, and om3
+messages, tools, tool calls, tool results, streaming events, and token usage. A
+Responses protocol adapter implements streamed text and function calls using
+the Go standard library. Agent orchestration, the ask API, sessions, and om3
 integration are not implemented yet.
 
 The JWT is never stored by the MCP client. It must be attached to the operation
 context and is forwarded only to MCP HTTP requests.
 
 The neutral LLM package has no provider, HTTP, credential, or model
-configuration. Those concerns belong to future protocol adapters.
+configuration. The factory selects an adapter by wire protocol, never by
+provider name.
+
+## LLM configuration
+
+The Responses adapter uses generic process configuration:
+
+| Variable | Description |
+| --- | --- |
+| `OPENSVC_AI_LLM_PROTOCOL` | Wire protocol. Currently `responses`. |
+| `OPENSVC_AI_LLM_BASE_URL` | API root; the adapter appends `/responses`. |
+| `OPENSVC_AI_LLM_MODEL` | Model identifier understood by the configured endpoint. |
+| `OPENSVC_AI_LLM_AUTH_MODE` | `none` or `bearer`. |
+| `OPENSVC_AI_LLM_API_TOKEN` | Bearer token when authentication is enabled. |
+| `OPENSVC_AI_LLM_TIMEOUT` | Whole request timeout, default `2m`. |
+| `OPENSVC_AI_LLM_MAX_OUTPUT_TOKENS` | Maximum generated tokens, default `4096`. |
+
+No endpoint, model, or token has a project default. Plain HTTP endpoints must
+use a loopback IP. The token value is checked at configuration time, read again
+when sending a request, and never retained in the non-secret configuration
+structure.
 
 ## Requirements
 
@@ -74,3 +95,10 @@ go test -tags=integration ./internal/mcpclient
 
 The test initializes an MCP session and lists the available tools. It never
 prints the JWT.
+
+The Responses adapter also has opt-in live text and synthetic tool-call tests.
+After exporting the generic LLM variables, run:
+
+```bash
+go test -tags=integration ./internal/llm/responses
+```

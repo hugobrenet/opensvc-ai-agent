@@ -13,9 +13,9 @@ servers remain the deterministic OpenSVC integration layer.
 ## Current scope
 
 The current implementation exposes an HTTP health endpoint, an authenticated
-MCP client, and provider-neutral LLM contracts. Add protocol adapters,
-orchestration, session, or om3 integration code only as an explicit project
-step.
+MCP client, provider-neutral LLM contracts, and a Responses protocol adapter.
+Add other protocol adapters, orchestration, session, or om3 integration code
+only as an explicit project step.
 
 ## Build order
 
@@ -24,13 +24,13 @@ active project step:
 
 1. Authenticated MCP Streamable HTTP client with request-scoped JWT delegation. Complete.
 2. Provider-neutral LLM client types. Complete.
-3. Responses protocol adapter. Next.
-4. Agent loop coordinating LLM tool calls with MCP tool execution.
+3. Responses protocol adapter. Complete.
+4. Agent loop coordinating LLM tool calls with MCP tool execution. Next.
 5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP.
 
-The Responses protocol adapter is the next step. The OpenSVC JWT belongs only
-to the MCP path. It must never enter an LLM request, prompt, tool argument, or
-provider configuration.
+The agent loop is the next step. The OpenSVC JWT belongs only to the MCP path.
+It must never enter an LLM request, prompt, tool argument, or provider
+configuration.
 
 ## Technology
 
@@ -62,6 +62,14 @@ internal/
     types.go
     validate.go
     llm_test.go
+    responses/
+      client.go
+      request.go
+      stream.go
+      client_test.go
+  llmfactory/
+    factory.go
+    factory_test.go
   mcpclient/
     client.go
     client_test.go
@@ -76,6 +84,11 @@ request-scoped credentials belong in `internal/auth`; MCP transport belongs in
 `internal/llm` must not import an HTTP protocol adapter or contain provider
 configuration. Protocol adapters implement `llm.Client`, map their wire events
 to neutral LLM events, and return transport or provider failures as Go errors.
+
+`internal/llm/responses` implements only the Responses wire protocol using
+`net/http`. It must set `store` to false, bound requests and streams, disable
+redirects, and ignore unknown semantic events. `internal/llmfactory` selects
+clients by protocol name, never by provider or model name.
 
 ## Security invariants
 
@@ -127,6 +140,10 @@ OpenSVC daemon, MCP server, network connection, or secret.
 The `integration` build tag may be used for explicit tests against a running
 MCP server. Such tests must read their endpoint and JWT from the environment,
 skip when either is absent, and never print the JWT.
+
+Responses integration tests use the same build tag and generic
+`OPENSVC_AI_LLM_*` environment variables. Never commit gateway URLs, model
+identifiers, or API tokens.
 
 ## Change discipline
 
