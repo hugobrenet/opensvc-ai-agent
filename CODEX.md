@@ -12,24 +12,25 @@ servers remain the deterministic OpenSVC integration layer.
 
 ## Current scope
 
-The current implementation exposes an HTTP health endpoint and an authenticated
-MCP client. Add provider, orchestration, session, or om3 integration code only
-as an explicit project step.
+The current implementation exposes an HTTP health endpoint, an authenticated
+MCP client, and provider-neutral LLM contracts. Add protocol adapters,
+orchestration, session, or om3 integration code only as an explicit project
+step.
 
 ## Build order
 
 Implement the first incomplete step only unless the user explicitly expands the
 active project step:
 
-1. Authenticated MCP Streamable HTTP client with request-scoped JWT delegation.
-2. Provider-neutral LLM client types.
-3. Responses protocol adapter.
+1. Authenticated MCP Streamable HTTP client with request-scoped JWT delegation. Complete.
+2. Provider-neutral LLM client types. Complete.
+3. Responses protocol adapter. Next.
 4. Agent loop coordinating LLM tool calls with MCP tool execution.
 5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP.
 
-The MCP client is the current active step. The OpenSVC JWT belongs only to the
-MCP path. It must never enter an LLM request, prompt, tool argument, or provider
-configuration.
+The Responses protocol adapter is the next step. The OpenSVC JWT belongs only
+to the MCP path. It must never enter an LLM request, prompt, tool argument, or
+provider configuration.
 
 ## Technology
 
@@ -56,6 +57,11 @@ internal/
   config/
     config.go
     config_test.go
+  llm/
+    client.go
+    types.go
+    validate.go
+    llm_test.go
   mcpclient/
     client.go
     client_test.go
@@ -64,7 +70,12 @@ internal/
 `cmd/opensvc-ai-agentd/main.go` is the composition root. HTTP contracts belong
 in `internal/api`; process configuration belongs in `internal/config`;
 request-scoped credentials belong in `internal/auth`; MCP transport belongs in
-`internal/mcpclient`.
+`internal/mcpclient`; provider-neutral model and tool-call contracts belong in
+`internal/llm`.
+
+`internal/llm` must not import an HTTP protocol adapter or contain provider
+configuration. Protocol adapters implement `llm.Client`, map their wire events
+to neutral LLM events, and return transport or provider failures as Go errors.
 
 ## Security invariants
 

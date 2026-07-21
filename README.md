@@ -11,11 +11,16 @@ providers and OpenSVC MCP tools.
 
 The implementation provides a health endpoint and a request-scoped MCP
 Streamable HTTP client. The client can list and call MCP tools while delegating
-the caller's OpenSVC Bearer JWT. LLM protocols, agent orchestration, the ask API,
-sessions, and om3 integration are not implemented yet.
+the caller's OpenSVC Bearer JWT. Provider-neutral LLM contracts describe text
+messages, tools, tool calls, tool results, streaming events, and token usage.
+LLM protocol adapters, agent orchestration, the ask API, sessions, and om3
+integration are not implemented yet.
 
 The JWT is never stored by the MCP client. It must be attached to the operation
 context and is forwarded only to MCP HTTP requests.
+
+The neutral LLM package has no provider, HTTP, credential, or model
+configuration. Those concerns belong to future protocol adapters.
 
 ## Requirements
 
