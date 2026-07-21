@@ -9,9 +9,13 @@ providers and OpenSVC MCP tools.
 
 ## Current status
 
-The initial implementation provides only a health endpoint using the Go
-standard library. MCP, LLM providers, agent orchestration, sessions, and om3
-integration are not implemented yet.
+The implementation provides a health endpoint and a request-scoped MCP
+Streamable HTTP client. The client can list and call MCP tools while delegating
+the caller's OpenSVC Bearer JWT. LLM protocols, agent orchestration, the ask API,
+sessions, and om3 integration are not implemented yet.
+
+The JWT is never stored by the MCP client. It must be attached to the operation
+context and is forwarded only to MCP HTTP requests.
 
 ## Requirements
 
@@ -54,3 +58,14 @@ go vet ./...
 go build -o /tmp/opensvc-ai-agentd ./cmd/opensvc-ai-agentd
 git diff --check
 ```
+
+An opt-in integration test can validate the authenticated client against a
+running OpenSVC MCP server. Export `OPENSVC_AI_TEST_MCP_ENDPOINT` and
+`OPENSVC_AI_TEST_MCP_JWT`, then run:
+
+```bash
+go test -tags=integration ./internal/mcpclient
+```
+
+The test initializes an MCP session and lists the available tools. It never
+prints the JWT.

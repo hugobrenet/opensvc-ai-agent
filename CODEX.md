@@ -12,9 +12,24 @@ servers remain the deterministic OpenSVC integration layer.
 
 ## Current scope
 
-The current implementation exposes only an HTTP health endpoint. Add MCP,
-provider, orchestration, session, or om3 integration code only as an explicit
-project step.
+The current implementation exposes an HTTP health endpoint and an authenticated
+MCP client. Add provider, orchestration, session, or om3 integration code only
+as an explicit project step.
+
+## Build order
+
+Implement the first incomplete step only unless the user explicitly expands the
+active project step:
+
+1. Authenticated MCP Streamable HTTP client with request-scoped JWT delegation.
+2. Provider-neutral LLM client types.
+3. Responses protocol adapter.
+4. Agent loop coordinating LLM tool calls with MCP tool execution.
+5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP.
+
+The MCP client is the current active step. The OpenSVC JWT belongs only to the
+MCP path. It must never enter an LLM request, prompt, tool argument, or provider
+configuration.
 
 ## Technology
 
@@ -35,13 +50,21 @@ internal/
   api/
     server.go
     server_test.go
+  auth/
+    context.go
+    context_test.go
   config/
     config.go
     config_test.go
+  mcpclient/
+    client.go
+    client_test.go
 ```
 
 `cmd/opensvc-ai-agentd/main.go` is the composition root. HTTP contracts belong
-in `internal/api`; process configuration belongs in `internal/config`.
+in `internal/api`; process configuration belongs in `internal/config`;
+request-scoped credentials belong in `internal/auth`; MCP transport belongs in
+`internal/mcpclient`.
 
 ## Security invariants
 
@@ -51,6 +74,10 @@ in `internal/api`; process configuration belongs in `internal/config`.
   request bodies, logs, errors, or test fixtures.
 - Future OpenSVC JWTs must remain request-scoped and must never be stored in a
   global variable or persistent session.
+- Treat OpenSVC JWTs as opaque credentials. The MCP server verifies signatures
+  and claims; the agent only delegates the token.
+- Attach OpenSVC JWTs to MCP HTTP requests through request context. Never retain
+  them in a long-lived MCP client.
 - Future provider credentials must remain separate from OpenSVC credentials.
 
 ## API rules
@@ -85,6 +112,10 @@ git diff --check
 
 Use `httptest` for API behavior. Normal tests must not require a live LLM,
 OpenSVC daemon, MCP server, network connection, or secret.
+
+The `integration` build tag may be used for explicit tests against a running
+MCP server. Such tests must read their endpoint and JWT from the environment,
+skip when either is absent, and never print the JWT.
 
 ## Change discipline
 
