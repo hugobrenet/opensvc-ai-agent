@@ -22,3 +22,20 @@ func TestEmptyBearerTokenIsAbsent(t *testing.T) {
 		t.Fatalf("empty token returned as %q, present=%v", token, ok)
 	}
 }
+
+func TestWithoutBearerTokenPreservesContextExceptToken(t *testing.T) {
+	type unrelatedKey struct{}
+	base, cancel := context.WithCancel(context.WithValue(t.Context(), unrelatedKey{}, "value"))
+	sanitized := WithoutBearerToken(WithBearerToken(base, "jwt-marker"))
+
+	if _, ok := BearerTokenFromContext(sanitized); ok {
+		t.Fatal("sanitized context contains bearer token")
+	}
+	if got := sanitized.Value(unrelatedKey{}); got != "value" {
+		t.Fatalf("unrelated context value = %v, want value", got)
+	}
+	cancel()
+	if sanitized.Err() != context.Canceled {
+		t.Fatalf("sanitized context error = %v, want context canceled", sanitized.Err())
+	}
+}

@@ -14,11 +14,14 @@ Streamable HTTP client. The client can list and call MCP tools while delegating
 the caller's OpenSVC Bearer JWT. Provider-neutral LLM contracts describe text
 messages, tools, tool calls, tool results, streaming events, and token usage. A
 Responses protocol adapter implements streamed text and function calls using
-the Go standard library. Agent orchestration, the ask API, sessions, and om3
-integration are not implemented yet.
+the Go standard library. The agent loop discovers MCP tools, lets the LLM select
+them, executes calls, returns results to the LLM, and repeats until a final
+answer. The ask API, persistent sessions, and om3 integration are not
+implemented yet.
 
 The JWT is never stored by the MCP client. It must be attached to the operation
-context and is forwarded only to MCP HTTP requests.
+context and is forwarded only to MCP HTTP requests. The agent masks it from the
+context passed to the LLM client.
 
 The neutral LLM package has no provider, HTTP, credential, or model
 configuration. The factory selects an adapter by wire protocol, never by
@@ -37,6 +40,18 @@ The Responses adapter uses generic process configuration:
 | `OPENSVC_AI_LLM_API_TOKEN` | Bearer token when authentication is enabled. |
 | `OPENSVC_AI_LLM_TIMEOUT` | Whole request timeout, default `2m`. |
 | `OPENSVC_AI_LLM_MAX_OUTPUT_TOKENS` | Maximum generated tokens, default `4096`. |
+
+## Agent configuration
+
+| Variable | Description |
+| --- | --- |
+| `OPENSVC_AI_AGENT_MAX_ITERATIONS` | Maximum LLM turns per request, default `8`, maximum `32`. |
+
+For each request, the agent opens an MCP session, lists all available tools,
+and sends their schemas to the LLM. Tool calls run sequentially, with at most
+four calls in one LLM turn. Functional tool errors are returned to the model so
+it can explain or recover; MCP transport errors stop the request. Tool arguments
+are limited to 256 KiB and encoded MCP results to 1 MiB.
 
 No endpoint, model, or token has a project default. Plain HTTP endpoints must
 use a loopback IP. The token value is checked at configuration time, read again
@@ -101,4 +116,11 @@ After exporting the generic LLM variables, run:
 
 ```bash
 go test -tags=integration ./internal/llm/responses
+```
+
+The complete agent loop can be tested against both services by exporting the
+MCP variables above together with the generic LLM variables, then running:
+
+```bash
+go test -tags=integration ./internal/agent
 ```

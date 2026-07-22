@@ -13,9 +13,10 @@ servers remain the deterministic OpenSVC integration layer.
 ## Current scope
 
 The current implementation exposes an HTTP health endpoint, an authenticated
-MCP client, provider-neutral LLM contracts, and a Responses protocol adapter.
-Add other protocol adapters, orchestration, session, or om3 integration code
-only as an explicit project step.
+MCP client, provider-neutral LLM contracts, a Responses protocol adapter, and
+an agent loop coordinating LLM turns with MCP tool calls. Add other protocol
+adapters, HTTP ask endpoints, persistent sessions, or om3 integration code only
+as an explicit project step.
 
 ## Build order
 
@@ -25,11 +26,11 @@ active project step:
 1. Authenticated MCP Streamable HTTP client with request-scoped JWT delegation. Complete.
 2. Provider-neutral LLM client types. Complete.
 3. Responses protocol adapter. Complete.
-4. Agent loop coordinating LLM tool calls with MCP tool execution. Next.
-5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP.
+4. Agent loop coordinating LLM tool calls with MCP tool execution. Complete.
+5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP. Next.
 
-The agent loop is the next step. The OpenSVC JWT belongs only to the MCP path.
-It must never enter an LLM request, prompt, tool argument, or provider
+The ask API is the next step. The OpenSVC JWT belongs only to the MCP path. It
+must never enter an LLM request, LLM context, prompt, tool argument, or provider
 configuration.
 
 ## Technology
@@ -48,6 +49,11 @@ cmd/
   opensvc-ai-agentd/
     main.go
 internal/
+  agent/
+    agent.go
+    convert.go
+    event.go
+    prompt.go
   api/
     server.go
     server_test.go
@@ -55,6 +61,7 @@ internal/
     context.go
     context_test.go
   config/
+    agent.go
     config.go
     config_test.go
   llm/
@@ -79,7 +86,14 @@ internal/
 in `internal/api`; process configuration belongs in `internal/config`;
 request-scoped credentials belong in `internal/auth`; MCP transport belongs in
 `internal/mcpclient`; provider-neutral model and tool-call contracts belong in
-`internal/llm`.
+`internal/llm`; LLM/MCP orchestration belongs in `internal/agent`.
+
+`internal/agent` opens one request-scoped MCP session, exposes every discovered
+MCP tool to the model, and executes requested tools sequentially. Tool arguments
+are limited to 256 KiB, results to 1 MiB, and each LLM turn to four tool calls.
+Functional MCP tool errors return to the model; MCP transport errors stop the
+run. The versioned system prompt belongs to the agent package, not provider
+configuration.
 
 `internal/llm` must not import an HTTP protocol adapter or contain provider
 configuration. Protocol adapters implement `llm.Client`, map their wire events
@@ -102,6 +116,8 @@ clients by protocol name, never by provider or model name.
   and claims; the agent only delegates the token.
 - Attach OpenSVC JWTs to MCP HTTP requests through request context. Never retain
   them in a long-lived MCP client.
+- Mask the delegated JWT from the context passed to an LLM client while
+  preserving cancellation, deadlines, and unrelated context values.
 - Future provider credentials must remain separate from OpenSVC credentials.
 
 ## API rules
