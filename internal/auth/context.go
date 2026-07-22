@@ -3,8 +3,9 @@ package auth
 import "context"
 
 type bearerTokenContextKey struct{}
+type identityContextKey struct{}
 
-type contextWithoutBearerToken struct {
+type contextWithoutAuthentication struct {
 	context.Context
 }
 
@@ -20,14 +21,33 @@ func BearerTokenFromContext(ctx context.Context) (string, bool) {
 	return token, ok && token != ""
 }
 
-// WithoutBearerToken returns a context that preserves cancellation, deadlines,
-// and unrelated values while hiding the delegated OpenSVC access JWT.
-func WithoutBearerToken(ctx context.Context) context.Context {
-	return contextWithoutBearerToken{Context: ctx}
+// WithIdentity returns a context carrying the verified OpenSVC caller identity.
+func WithIdentity(ctx context.Context, identity Identity) context.Context {
+	identity.Grants = append([]string(nil), identity.Grants...)
+	return context.WithValue(ctx, identityContextKey{}, identity)
 }
 
-func (c contextWithoutBearerToken) Value(key any) any {
+// IdentityFromContext returns a copy of the verified OpenSVC caller identity.
+func IdentityFromContext(ctx context.Context) (Identity, bool) {
+	identity, ok := ctx.Value(identityContextKey{}).(Identity)
+	if !ok || identity.Subject == "" {
+		return Identity{}, false
+	}
+	identity.Grants = append([]string(nil), identity.Grants...)
+	return identity, true
+}
+
+// WithoutAuthentication returns a context that preserves cancellation,
+// deadlines, and unrelated values while hiding OpenSVC authentication data.
+func WithoutAuthentication(ctx context.Context) context.Context {
+	return contextWithoutAuthentication{Context: ctx}
+}
+
+func (c contextWithoutAuthentication) Value(key any) any {
 	if _, ok := key.(bearerTokenContextKey); ok {
+		return nil
+	}
+	if _, ok := key.(identityContextKey); ok {
 		return nil
 	}
 	return c.Context.Value(key)

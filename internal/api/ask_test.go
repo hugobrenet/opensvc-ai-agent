@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,8 +19,26 @@ import (
 
 type askerFunc func(context.Context, string, agent.EmitFunc) error
 
+type tokenVerifierFunc func(context.Context, string) (auth.Identity, error)
+
+type readTrackingBody struct {
+	reader io.Reader
+	read   bool
+}
+
+func (b *readTrackingBody) Read(data []byte) (int, error) {
+	b.read = true
+	return b.reader.Read(data)
+}
+
+func (*readTrackingBody) Close() error { return nil }
+
 func (f askerFunc) Ask(ctx context.Context, prompt string, emit agent.EmitFunc) error {
 	return f(ctx, prompt, emit)
+}
+
+func (f tokenVerifierFunc) Verify(ctx context.Context, token string) (auth.Identity, error) {
+	return f(ctx, token)
 }
 
 func TestAskStreamsAgentEventsWithDelegatedJWT(t *testing.T) {
@@ -29,6 +48,9 @@ func TestAskStreamsAgentEventsWithDelegatedJWT(t *testing.T) {
 		called = true
 		if got, ok := auth.BearerTokenFromContext(ctx); !ok || got != token {
 			t.Fatalf("delegated JWT = %q, %v", got, ok)
+		}
+		if identity, ok := auth.IdentityFromContext(ctx); !ok || identity.Subject != "test-user" {
+			t.Fatalf("verified identity = %+v, %v", identity, ok)
 		}
 		if prompt != "health of my cluster" {
 			t.Fatalf("got prompt %q", prompt)
@@ -83,6 +105,44 @@ func TestAskStreamsAgentEventsWithDelegatedJWT(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), token) {
 		t.Fatal("response body exposes delegated JWT")
+	}
+}
+
+func TestAskRejectsTokenRejectedByVerifier(t *testing.T) {
+	const token = "forged-jwt-marker"
+	var agentCalls atomic.Int64
+	verifier := tokenVerifierFunc(func(_ context.Context, got string) (auth.Identity, error) {
+		if got != token {
+			t.Fatalf("verifier got token %q", got)
+		}
+		return auth.Identity{}, auth.ErrInvalidToken
+	})
+	handler := newTestHandlerWithVerifier(t, askerFunc(func(context.Context, string, agent.EmitFunc) error {
+		agentCalls.Add(1)
+		return nil
+	}), verifier)
+	request := httptest.NewRequest(http.MethodPost, "/v1/ask", nil)
+	body := &readTrackingBody{reader: strings.NewReader(`{"prompt":"health"}`)}
+	request.Body = body
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("got status %d, want 401", response.Code)
+	}
+	if response.Header().Get("WWW-Authenticate") != "Bearer" {
+		t.Fatalf("got WWW-Authenticate %q", response.Header().Get("WWW-Authenticate"))
+	}
+	if agentCalls.Load() != 0 {
+		t.Fatalf("agent called %d times", agentCalls.Load())
+	}
+	if body.read {
+		t.Fatal("request body was read before JWT authentication")
+	}
+	if strings.Contains(response.Body.String(), token) {
+		t.Fatal("unauthorized response exposes JWT")
 	}
 }
 
@@ -210,8 +270,11 @@ func TestWriteSSEEnforcesStreamBound(t *testing.T) {
 }
 
 func TestNewHandlerRejectsNilAgent(t *testing.T) {
-	if _, err := NewHandler(nil); err == nil {
+	if _, err := NewHandler(nil, allowTestTokenVerifier()); err == nil {
 		t.Fatal("NewHandler(nil) succeeded")
+	}
+	if _, err := NewHandler(askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil }), nil); err == nil {
+		t.Fatal("NewHandler() accepted nil verifier")
 	}
 }
 
@@ -220,11 +283,22 @@ func newTestHandler(t *testing.T, asker Asker) http.Handler {
 	if asker == nil {
 		asker = askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil })
 	}
-	handler, err := NewHandler(asker)
+	return newTestHandlerWithVerifier(t, asker, allowTestTokenVerifier())
+}
+
+func newTestHandlerWithVerifier(t *testing.T, asker Asker, verifier auth.TokenVerifier) http.Handler {
+	t.Helper()
+	handler, err := NewHandler(asker, verifier)
 	if err != nil {
 		t.Fatalf("create API handler: %v", err)
 	}
 	return handler
+}
+
+func allowTestTokenVerifier() auth.TokenVerifier {
+	return tokenVerifierFunc(func(context.Context, string) (auth.Identity, error) {
+		return auth.Identity{Subject: "test-user", Issuer: "test-node"}, nil
+	})
 }
 
 func decodeSSEEvents(t *testing.T, body string) []AskEvent {

@@ -55,6 +55,18 @@ wire contract from `OPENSVC_AI_LLM_PROTOCOL` explicitly:
 | --- | --- |
 | `OPENSVC_AI_MCP_ENDPOINT` | Streamable HTTP MCP endpoint used for request-scoped sessions. |
 
+## OpenSVC authentication
+
+| Variable | Description |
+| --- | --- |
+| `OPENSVC_AI_JWT_VERIFY_KEY_FILE` | Cluster CA certificate or RSA public key used to verify OpenSVC access JWTs; defaults to `/var/lib/opensvc/certs/ca_certificates`. |
+
+The API accepts only RS256 JWTs signed by the configured OpenSVC cluster CA. It
+requires valid registered time claims, non-empty `sub` and `iss`, and
+`token_use=access`. Authentication happens before the ask request body is read
+or its SSE response starts. The same request-scoped JWT is then independently
+verified by MCP and delegated to the OpenSVC daemon for grant enforcement.
+
 For each request, the agent opens an MCP session, lists all available tools,
 and sends their schemas to the LLM. Tool calls run sequentially, with at most
 four calls in one LLM turn. Functional tool errors are returned to the model so
@@ -106,8 +118,9 @@ Expected response:
 
 ## One-shot ask
 
-`POST /v1/ask` accepts one prompt and streams agent events as SSE. The OpenSVC
-JWT is treated as an opaque request-scoped credential and delegated only to MCP:
+`POST /v1/ask` accepts one prompt and streams agent events as SSE. After local
+verification, the OpenSVC JWT remains request-scoped and is delegated only to
+MCP:
 
 ```bash
 curl -N http://127.0.0.1:8090/v1/ask \

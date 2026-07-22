@@ -9,6 +9,7 @@ import (
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/agent"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/api"
+	"github.com/hugobrenet/opensvc-ai-agent/internal/auth"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/config"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/llmfactory"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/mcpclient"
@@ -31,6 +32,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("load MCP configuration: %v", err)
 	}
+	jwtConfig := config.LoadJWT()
+	verifier, err := auth.NewJWTVerifier(jwtConfig.VerifyKeyFile)
+	if err != nil {
+		log.Fatalf("create OpenSVC JWT verifier: %v", err)
+	}
 
 	model, err := llmfactory.New(llmConfig, nil)
 	if err != nil {
@@ -46,7 +52,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("create agent: %v", err)
 	}
-	handler, err := api.NewHandler(orchestrator)
+	handler, err := api.NewHandler(orchestrator, verifier)
 	if err != nil {
 		log.Fatalf("create HTTP API: %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/agent"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/api"
+	"github.com/hugobrenet/opensvc-ai-agent/internal/auth"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/config"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/llmfactory"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/mcpclient"
@@ -46,7 +47,12 @@ func TestLiveAskStreamsClusterHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create live agent: %v", err)
 	}
-	handler, err := api.NewHandler(orchestrator)
+	jwtConfig := config.LoadJWT()
+	verifier, err := auth.NewJWTVerifier(jwtConfig.VerifyKeyFile)
+	if err != nil {
+		t.Fatalf("create live JWT verifier: %v", err)
+	}
+	handler, err := api.NewHandler(orchestrator, verifier)
 	if err != nil {
 		t.Fatalf("create live API: %v", err)
 	}

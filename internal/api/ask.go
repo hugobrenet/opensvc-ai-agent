@@ -11,14 +11,12 @@ import (
 	"strings"
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/agent"
-	"github.com/hugobrenet/opensvc-ai-agent/internal/auth"
 )
 
 const (
-	maxAskRequestBytes  = 64 << 10
-	maxPromptBytes      = 32 << 10
-	maxBearerTokenBytes = 16 << 10
-	maxAskStreamBytes   = 16 << 20
+	maxAskRequestBytes = 64 << 10
+	maxPromptBytes     = 32 << 10
+	maxAskStreamBytes  = 16 << 20
 )
 
 type Asker interface {
@@ -58,11 +56,6 @@ type APIError struct {
 
 func serveAsk(asker Asker) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
-		token, err := bearerToken(request.Header.Get("Authorization"))
-		if err != nil {
-			writeJSONError(response, http.StatusUnauthorized, "unauthorized", "a Bearer access token is required")
-			return
-		}
 		askRequest, status, apiError := decodeAskRequest(response, request)
 		if apiError != nil {
 			writeJSONError(response, status, apiError.Code, apiError.Message)
@@ -80,11 +73,10 @@ func serveAsk(asker Asker) http.HandlerFunc {
 		response.WriteHeader(http.StatusOK)
 		flusher.Flush()
 
-		ctx := auth.WithBearerToken(request.Context(), token)
 		writeFailed := false
 		completed := false
 		var streamBytes int64
-		err = asker.Ask(ctx, askRequest.Prompt, func(event agent.Event) error {
+		err := asker.Ask(request.Context(), askRequest.Prompt, func(event agent.Event) error {
 			streamEvent := newAskEvent(event)
 			if err := writeSSE(response, flusher, &streamBytes, streamEvent); err != nil {
 				writeFailed = true
@@ -131,17 +123,6 @@ func decodeAskRequest(response http.ResponseWriter, request *http.Request) (AskR
 		return AskRequest{}, http.StatusRequestEntityTooLarge, &APIError{Code: "prompt_too_large", Message: "prompt is too large"}
 	}
 	return askRequest, 0, nil
-}
-
-func bearerToken(header string) (string, error) {
-	parts := strings.Fields(header)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
-		return "", fmt.Errorf("invalid Bearer authorization header")
-	}
-	if len(parts[1]) > maxBearerTokenBytes {
-		return "", fmt.Errorf("Bearer access token is too large")
-	}
-	return parts[1], nil
 }
 
 func newAskEvent(event agent.Event) AskEvent {

@@ -57,15 +57,20 @@ internal/
   api/
     ask.go
     ask_test.go
+    auth_middleware.go
     server.go
     server_test.go
   auth/
     context.go
     context_test.go
+    jwt.go
+    jwt_test.go
   config/
     agent.go
     config.go
     config_test.go
+    jwt.go
+    mcp.go
   llm/
     client.go
     types.go
@@ -95,11 +100,12 @@ request-scoped credentials belong in `internal/auth`; MCP transport belongs in
 `internal/mcpclient`; provider-neutral model and tool-call contracts belong in
 `internal/llm`; LLM/MCP orchestration belongs in `internal/agent`.
 
-The composition root loads and validates HTTP, LLM, MCP, and agent
-configuration; constructs one shared LLM client, MCP client, and Agent; then
-injects the Agent into the API handler. `POST /v1/ask` never constructs provider
-clients. Each call attaches the opaque caller JWT to its request context and
-`Agent.Ask` opens and closes one request-scoped MCP session.
+The composition root loads and validates HTTP, JWT, LLM, MCP, and agent
+configuration; constructs one shared JWT verifier, LLM client, MCP client, and
+Agent; then injects them into the API handler. `POST /v1/ask` never constructs
+provider clients. Its middleware authenticates the OpenSVC access JWT before
+reading the prompt or starting SSE. `Agent.Ask` then opens and closes one
+request-scoped MCP session using the same JWT.
 
 `internal/agent` opens one request-scoped MCP session, exposes every discovered
 MCP tool to the model, and executes requested tools sequentially. Tool arguments
@@ -134,12 +140,16 @@ protocol name, never by provider or model name.
   request bodies, logs, errors, or test fixtures.
 - Future OpenSVC JWTs must remain request-scoped and must never be stored in a
   global variable or persistent session.
-- Treat OpenSVC JWTs as opaque credentials. The MCP server verifies signatures
-  and claims; the agent only delegates the token.
+- Authenticate `/v1/ask` with the OpenSVC cluster CA before reading its body or
+  starting SSE. Accept only RS256 tokens with valid expiration, non-empty `sub`
+  and `iss`, and `token_use=access`.
+- Continue delegating the verified raw JWT to MCP. Agent authentication never
+  replaces MCP and daemon verification or authorization.
 - Attach OpenSVC JWTs to MCP HTTP requests through request context. Never retain
   them in a long-lived MCP client.
-- Mask the delegated JWT from the context passed to an LLM client while
-  preserving cancellation, deadlines, and unrelated context values.
+- Mask the delegated JWT, verified identity, and grants from the context passed
+  to an LLM client while preserving cancellation, deadlines, and unrelated
+  context values.
 - Future provider credentials must remain separate from OpenSVC credentials.
 
 ## API rules

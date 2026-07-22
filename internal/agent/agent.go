@@ -73,7 +73,7 @@ func (a *Agent) Ask(ctx context.Context, prompt string, emit EmitFunc) (err erro
 		{Role: llm.RoleSystem, Text: systemPrompt},
 		{Role: llm.RoleUser, Text: prompt},
 	}
-	llmContext := auth.WithoutBearerToken(ctx)
+	llmContext := auth.WithoutAuthentication(ctx)
 
 	for iteration := 1; iteration <= a.config.MaxIterations; iteration++ {
 		var (

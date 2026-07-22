@@ -22,6 +22,9 @@ func TestAskReturnsDirectAnswerAndExposesAllTools(t *testing.T) {
 		if _, ok := auth.BearerTokenFromContext(ctx); ok {
 			t.Fatal("LLM context contains delegated JWT")
 		}
+		if _, ok := auth.IdentityFromContext(ctx); ok {
+			t.Fatal("LLM context contains verified OpenSVC identity")
+		}
 	}, steps: []llmStep{func(request llm.Request, emit llm.EmitFunc) error {
 		if len(request.Messages) != 2 || request.Messages[0].Role != llm.RoleSystem || request.Messages[0].Text != systemPrompt {
 			t.Fatalf("unexpected initial messages: %#v", request.Messages)
@@ -40,6 +43,7 @@ func TestAskReturnsDirectAnswerAndExposesAllTools(t *testing.T) {
 	}}}
 	agent := newTestAgent(t, model, session, 4)
 	ctx := auth.WithBearerToken(t.Context(), "jwt-marker")
+	ctx = auth.WithIdentity(ctx, auth.Identity{Subject: "alice", Issuer: "node-a", Grants: []string{"guest"}})
 	var events []Event
 	if err := agent.Ask(ctx, "health of my cluster", func(event Event) error {
 		events = append(events, event)
