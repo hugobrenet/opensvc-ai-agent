@@ -14,9 +14,9 @@ servers remain the deterministic OpenSVC integration layer.
 
 The current implementation exposes an HTTP health endpoint, an authenticated
 MCP client, provider-neutral LLM contracts, Responses and Chat Completions
-protocol adapters, and an agent loop coordinating LLM turns with MCP tool calls.
-Add other protocol adapters, HTTP ask endpoints, persistent sessions, or om3
-integration code only as an explicit project step.
+protocol adapters, an agent loop coordinating LLM turns with MCP tool calls,
+and an authenticated one-shot SSE ask API. Add other protocol adapters,
+persistent sessions, or om3 integration code only as an explicit project step.
 
 ## Build order
 
@@ -27,11 +27,11 @@ active project step:
 2. Provider-neutral LLM client types. Complete.
 3. Responses protocol adapter. Complete.
 4. Agent loop coordinating LLM tool calls with MCP tool execution. Complete.
-5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP. Next.
+5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP. Complete.
 
-The ask API is the next step. The OpenSVC JWT belongs only to the MCP path. It
-must never enter an LLM request, LLM context, prompt, tool argument, or provider
-configuration.
+The next project step is not selected. The OpenSVC JWT belongs only to the MCP
+path. It must never enter an LLM request, LLM context, prompt, tool argument, or
+provider configuration.
 
 ## Technology
 
@@ -55,6 +55,8 @@ internal/
     event.go
     prompt.go
   api/
+    ask.go
+    ask_test.go
     server.go
     server_test.go
   auth/
@@ -92,6 +94,12 @@ in `internal/api`; process configuration belongs in `internal/config`;
 request-scoped credentials belong in `internal/auth`; MCP transport belongs in
 `internal/mcpclient`; provider-neutral model and tool-call contracts belong in
 `internal/llm`; LLM/MCP orchestration belongs in `internal/agent`.
+
+The composition root loads and validates HTTP, LLM, MCP, and agent
+configuration; constructs one shared LLM client, MCP client, and Agent; then
+injects the Agent into the API handler. `POST /v1/ask` never constructs provider
+clients. Each call attaches the opaque caller JWT to its request context and
+`Agent.Ask` opens and closes one request-scoped MCP session.
 
 `internal/agent` opens one request-scoped MCP session, exposes every discovered
 MCP tool to the model, and executes requested tools sequentially. Tool arguments
@@ -140,8 +148,14 @@ protocol name, never by provider or model name.
 - Health and readiness endpoints may remain unversioned.
 - Use typed JSON request and response structures.
 - Bound request bodies, response bodies, timeouts, and agent iterations.
-- Stream future long-running responses with an explicit, documented event
-  contract. Do not expose model chain-of-thought.
+- Stream long-running responses with an explicit, documented event contract.
+  Do not expose model chain-of-thought.
+- `POST /v1/ask` is one-shot and streams `text_delta`, `tool_started`,
+  `tool_finished`, `usage`, `completed`, or generic `error` SSE events. Do not
+  expose tool arguments, tool results, provider errors, or credentials.
+- Reject invalid authentication, media types, JSON, and prompt bounds before
+  starting SSE. Once streaming starts, report runtime failures as a generic
+  terminal SSE error because the HTTP status can no longer change.
 
 ## Go style
 

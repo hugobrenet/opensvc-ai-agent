@@ -11,7 +11,7 @@ func TestHealth(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	response := httptest.NewRecorder()
 
-	NewHandler().ServeHTTP(response, request)
+	newTestHandler(t, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("got status %d, want %d", response.Code, http.StatusOK)
@@ -32,7 +32,7 @@ func TestHealthRejectsOtherMethods(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/health", nil)
 	response := httptest.NewRecorder()
 
-	NewHandler().ServeHTTP(response, request)
+	newTestHandler(t, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("got status %d, want %d", response.Code, http.StatusMethodNotAllowed)
@@ -43,7 +43,7 @@ func TestUnknownRoute(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/unknown", nil)
 	response := httptest.NewRecorder()
 
-	NewHandler().ServeHTTP(response, request)
+	newTestHandler(t, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("got status %d, want %d", response.Code, http.StatusNotFound)

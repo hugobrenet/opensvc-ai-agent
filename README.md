@@ -16,8 +16,9 @@ messages, tools, tool calls, tool results, streaming events, and token usage. A
 Responses and Chat Completions protocol adapters implement streamed text and
 function calls using the Go standard library. The agent loop discovers MCP
 tools, lets the LLM select them, executes calls, returns results to the LLM,
-and repeats until a final answer. The ask API, persistent sessions, and om3
-integration are not implemented yet.
+and repeats until a final answer. An authenticated one-shot ask API exposes the
+agent event stream over SSE. Persistent sessions and om3 integration are not
+implemented yet.
 
 The JWT is never stored by the MCP client. It must be attached to the operation
 context and is forwarded only to MCP HTTP requests. The agent masks it from the
@@ -48,6 +49,12 @@ wire contract from `OPENSVC_AI_LLM_PROTOCOL` explicitly:
 | --- | --- |
 | `OPENSVC_AI_AGENT_MAX_ITERATIONS` | Maximum LLM turns per request, default `8`, maximum `32`. |
 
+## MCP configuration
+
+| Variable | Description |
+| --- | --- |
+| `OPENSVC_AI_MCP_ENDPOINT` | Streamable HTTP MCP endpoint used for request-scoped sessions. |
+
 For each request, the agent opens an MCP session, lists all available tools,
 and sends their schemas to the LLM. Tool calls run sequentially, with at most
 four calls in one LLM turn. Functional tool errors are returned to the model so
@@ -65,9 +72,15 @@ structure.
 
 ## Run
 
+Configure the generic LLM variables, `OPENSVC_AI_MCP_ENDPOINT`, and then run:
+
 ```bash
 go run ./cmd/opensvc-ai-agentd
 ```
+
+The daemon validates the LLM, agent, and MCP configuration at startup. Provider
+tokens remain in their environment variable and are not retained in process
+configuration.
 
 The daemon listens on `127.0.0.1:8090` by default. Override the loopback
 address with:
@@ -90,6 +103,25 @@ Expected response:
 ```json
 {"status":"ok"}
 ```
+
+## One-shot ask
+
+`POST /v1/ask` accepts one prompt and streams agent events as SSE. The OpenSVC
+JWT is treated as an opaque request-scoped credential and delegated only to MCP:
+
+```bash
+curl -N http://127.0.0.1:8090/v1/ask \
+  -H "Authorization: Bearer $OPENSVC_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Assess the health of my cluster."}'
+```
+
+The stream can contain `text_delta`, `tool_started`, `tool_finished`, `usage`,
+`completed`, and `error` events. Tool arguments, tool results, provider errors,
+and credentials are not exposed by this API. Authentication and request
+validation failures use JSON HTTP errors before streaming starts. Runtime
+failures use a generic terminal `error` SSE event because the HTTP 200 response
+has already started.
 
 ## Development
 
@@ -126,4 +158,5 @@ MCP variables above together with the generic LLM variables, then running:
 
 ```bash
 go test -tags=integration ./internal/agent
+go test -tags=integration ./internal/api
 ```
