@@ -95,6 +95,13 @@ Functional MCP tool errors return to the model; MCP transport errors stop the
 run. The versioned system prompt belongs to the agent package, not provider
 configuration.
 
+The current catalog is small enough to send every tool definition on each LLM
+turn. If the MCP catalog grows, introduce request-scoped tool routing so only a
+bounded relevant subset reaches the model. Preserve the authenticated MCP tool
+visibility and invalidation semantics; do not replace it with an authorization-
+blind global catalog. Protocol-specific conversation or prompt caching belongs
+in protocol adapters and must remain an optional optimization.
+
 `internal/llm` must not import an HTTP protocol adapter or contain provider
 configuration. Protocol adapters implement `llm.Client`, map their wire events
 to neutral LLM events, and return transport or provider failures as Go errors.
