@@ -73,14 +73,16 @@ type Session struct {
 
 // ListTools returns every tool exposed by the MCP server, following pagination.
 func (s *Session) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
-	var tools []*mcp.Tool
+	catalog := toolCatalog{tools: make([]*mcp.Tool, 0, maxMCPToolCount)}
 	for tool, err := range s.session.Tools(ctx, nil) {
 		if err != nil {
 			return nil, fmt.Errorf("list MCP tools: %w", err)
 		}
-		tools = append(tools, tool)
+		if err := catalog.add(tool); err != nil {
+			return nil, fmt.Errorf("list MCP tools: %w", err)
+		}
 	}
-	return tools, nil
+	return catalog.tools, nil
 }
 
 // CallTool invokes a named MCP tool with JSON-compatible arguments.

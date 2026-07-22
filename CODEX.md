@@ -36,8 +36,9 @@ active project step:
      agent keeps only its end-to-end ask deadline.
    - Add process-wide ask admission control returning an HTTP error before SSE,
      plus per-ask total tool-call and model-usage budgets.
-   - Bound the MCP tool count, individual and aggregate schemas, and
-     protocol-adapter tool-call accumulation.
+   - Bound the MCP tool count, complete definitions, and individual and
+     aggregate model-visible schemas. Complete.
+   - Bound protocol-adapter tool-call accumulation.
 7. Deterministic tool and data-governance policy. Pending.
    - Default to read-only tools and explicitly allow approved non-destructive
      diagnostic probes such as `refresh_instance_status`.
@@ -138,8 +139,10 @@ MCP tool to the model, and executes requested tools sequentially. Tool arguments
 are limited to 256 KiB, results to 1 MiB, and each LLM turn to four tool calls.
 Functional MCP tool errors return to the model; MCP transport errors stop the
 run. The MCP HTTP transport rejects response bodies larger than 4 MiB before the
-SDK decodes them. The versioned system prompt belongs to the agent package, not
-provider configuration.
+SDK decodes them. MCP catalogs are limited to 128 tools, 512 KiB per complete
+definition, and 4 MiB total. Model-visible names, descriptions, input schemas,
+and the aggregate catalog have tighter bounds. The versioned system prompt
+belongs to the agent package, not provider configuration.
 
 The current catalog is small enough to send every tool definition on each LLM
 turn. If the MCP catalog grows, introduce request-scoped tool routing so only a

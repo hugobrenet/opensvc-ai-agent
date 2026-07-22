@@ -11,17 +11,28 @@ import (
 )
 
 const (
-	maxToolCallsPerTurn = 4
-	maxToolArguments    = 256 << 10
-	maxToolResult       = 1 << 20
+	maxToolCallsPerTurn      = 4
+	maxToolArguments         = 256 << 10
+	maxToolResult            = 1 << 20
+	maxToolNameBytes         = 128
+	maxToolDescriptionBytes  = 4 << 10
+	maxToolInputSchemaBytes  = 256 << 10
+	maxModelToolCatalogBytes = 1 << 20
 )
 
 func convertTools(tools []*mcp.Tool) ([]llm.Tool, map[string]struct{}, error) {
 	converted := make([]llm.Tool, 0, len(tools))
 	names := make(map[string]struct{}, len(tools))
+	catalogBytes := 0
 	for index, tool := range tools {
 		if tool == nil {
 			return nil, nil, fmt.Errorf("MCP tool %d is nil", index)
+		}
+		if len(tool.Name) > maxToolNameBytes {
+			return nil, nil, fmt.Errorf("MCP tool %d name exceeds %d bytes", index, maxToolNameBytes)
+		}
+		if len(tool.Description) > maxToolDescriptionBytes {
+			return nil, nil, fmt.Errorf("MCP tool %d description exceeds %d bytes", index, maxToolDescriptionBytes)
 		}
 		if _, exists := names[tool.Name]; exists {
 			return nil, nil, fmt.Errorf("MCP tool name %q is duplicated", tool.Name)
@@ -30,6 +41,14 @@ func convertTools(tools []*mcp.Tool) ([]llm.Tool, map[string]struct{}, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("encode MCP tool %q input schema: %w", tool.Name, err)
 		}
+		if len(schema) > maxToolInputSchemaBytes {
+			return nil, nil, fmt.Errorf("MCP tool %d input schema exceeds %d bytes", index, maxToolInputSchemaBytes)
+		}
+		definitionBytes := len(tool.Name) + len(tool.Description) + len(schema)
+		if catalogBytes+definitionBytes > maxModelToolCatalogBytes {
+			return nil, nil, fmt.Errorf("model tool catalog exceeds %d bytes", maxModelToolCatalogBytes)
+		}
+		catalogBytes += definitionBytes
 		names[tool.Name] = struct{}{}
 		converted = append(converted, llm.Tool{
 			Name:        tool.Name,

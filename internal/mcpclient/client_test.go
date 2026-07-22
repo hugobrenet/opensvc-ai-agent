@@ -138,6 +138,45 @@ func TestSessionRequiresJWTOnEveryOperation(t *testing.T) {
 	}
 }
 
+func TestClientRejectsTooManyTools(t *testing.T) {
+	const token = "delegated-test-token"
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-mcp", Version: "v0.1.0"}, nil)
+	for index := 0; index <= maxMCPToolCount; index++ {
+		mcp.AddTool(server, &mcp.Tool{Name: fmt.Sprintf("tool_%03d", index)},
+			func(context.Context, *mcp.CallToolRequest, map[string]any) (*mcp.CallToolResult, map[string]any, error) {
+				return nil, map[string]any{}, nil
+			})
+	}
+	streamHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		streamHandler.ServeHTTP(response, request)
+	}))
+	t.Cleanup(httpServer.Close)
+
+	client, err := New(httpServer.URL, httpServer.Client())
+	if err != nil {
+		t.Fatalf("create MCP client: %v", err)
+	}
+	ctx := auth.WithBearerToken(t.Context(), token)
+	session, err := client.Connect(ctx)
+	if err != nil {
+		t.Fatalf("connect MCP client: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	tools, err := session.ListTools(ctx)
+	if err == nil || !strings.Contains(err.Error(), "tool count exceeds") {
+		t.Fatalf("ListTools() tools=%d error=%v, want count limit", len(tools), err)
+	}
+	if tools != nil {
+		t.Fatalf("ListTools() returned a partial catalog of %d tools", len(tools))
+	}
+}
+
 func TestCallToolRejectsEmptyName(t *testing.T) {
 	session := &Session{}
 	if _, err := session.CallTool(t.Context(), "", nil); err == nil {

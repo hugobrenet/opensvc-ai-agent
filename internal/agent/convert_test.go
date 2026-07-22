@@ -37,3 +37,53 @@ func TestConvertToolsRejectsInvalidTools(t *testing.T) {
 		}
 	}
 }
+
+func TestConvertToolsBoundsModelVisibleDefinitions(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		tools []*mcp.Tool
+		want  string
+	}{
+		{
+			name:  "name",
+			tools: []*mcp.Tool{{Name: strings.Repeat("n", maxToolNameBytes+1), InputSchema: objectSchema()}},
+			want:  "name exceeds",
+		},
+		{
+			name:  "description",
+			tools: []*mcp.Tool{{Name: "tool", Description: strings.Repeat("d", maxToolDescriptionBytes+1), InputSchema: objectSchema()}},
+			want:  "description exceeds",
+		},
+		{
+			name: "input schema",
+			tools: []*mcp.Tool{{
+				Name:        "tool",
+				InputSchema: map[string]any{"type": "object", "description": strings.Repeat("s", maxToolInputSchemaBytes)},
+			}},
+			want: "input schema exceeds",
+		},
+		{
+			name:  "aggregate catalog",
+			tools: modelCatalogTools(),
+			want:  "model tool catalog exceeds",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, _, err := convertTools(test.tools); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("convertTools() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func modelCatalogTools() []*mcp.Tool {
+	const schemaPadding = 220 << 10
+	tools := make([]*mcp.Tool, 0, 5)
+	for index := 0; index < 5; index++ {
+		tools = append(tools, &mcp.Tool{
+			Name:        string(rune('a' + index)),
+			InputSchema: map[string]any{"type": "object", "description": strings.Repeat("s", schemaPadding)},
+		})
+	}
+	return tools
+}
