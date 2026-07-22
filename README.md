@@ -37,6 +37,7 @@ provider name.
 | --- | --- |
 | `OPENSVC_AI_LISTEN_ADDRESS` | Loopback listen address, default `127.0.0.1:8090`. |
 | `OPENSVC_AI_MAX_CONCURRENT_ASKS` | Process-wide concurrent ask limit, default `4`, maximum `128`. |
+| `OPENSVC_AI_SHUTDOWN_TIMEOUT` | Maximum graceful shutdown drain time, default `30s`, accepted range `1s` to `5m`. |
 
 ## LLM configuration
 
@@ -77,6 +78,15 @@ requires valid registered time claims, non-empty `sub` and `iss`, and
 `token_use=access`. Authentication happens before the ask request body is read
 or its SSE response starts. The same request-scoped JWT is then independently
 verified by MCP and delegated to the OpenSVC daemon for grant enforcement.
+After verification, the inbound `Authorization` header is removed before the
+request reaches the ask handler; the JWT remains only in private request
+context.
+
+The verification certificate or public key is loaded once at process startup
+and is not reloaded automatically. Replace the configured public file
+atomically and restart the agent when the OpenSVC signing key changes.
+Coordinate the same rotation with the MCP server and JWT issuer so they validate
+the same generation of access tokens throughout the transition.
 
 For each request, the agent opens an MCP session, lists all available tools,
 and sends their schemas to the LLM. Tool calls run sequentially, with at most
@@ -119,7 +129,12 @@ OPENSVC_AI_LISTEN_ADDRESS=127.0.0.1:8091 \
   go run ./cmd/opensvc-ai-agentd
 ```
 
-Non-loopback addresses are rejected while server-side TLS is unavailable.
+Non-loopback addresses are rejected while server-side TLS is unavailable. The
+HTTP server limits request headers to 64 KiB. On `SIGINT` or `SIGTERM`, it stops
+accepting new requests and lets active asks finish for at most
+`OPENSVC_AI_SHUTDOWN_TIMEOUT`. Once that deadline expires, remaining
+connections are closed so cancellation propagates to active LLM and MCP
+operations.
 
 ## Health
 

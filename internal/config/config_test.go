@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoad(t *testing.T) {
 	for _, test := range []struct {
@@ -38,7 +41,37 @@ func TestLoad(t *testing.T) {
 			if config.MaxConcurrentAsks != DefaultMaxConcurrentAsks {
 				t.Errorf("got max concurrent asks %d, want %d", config.MaxConcurrentAsks, DefaultMaxConcurrentAsks)
 			}
+			if config.ShutdownTimeout != DefaultShutdownTimeout {
+				t.Errorf("got shutdown timeout %s, want %s", config.ShutdownTimeout, DefaultShutdownTimeout)
+			}
 		})
+	}
+}
+
+func TestLoadShutdownTimeout(t *testing.T) {
+	config, err := load(func(key string) string {
+		if key == "OPENSVC_AI_SHUTDOWN_TIMEOUT" {
+			return "45s"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.ShutdownTimeout != 45*time.Second {
+		t.Fatalf("got shutdown timeout %s, want 45s", config.ShutdownTimeout)
+	}
+
+	for _, value := range []string{"invalid", "0s", "500ms", "6m"} {
+		_, err := load(func(key string) string {
+			if key == "OPENSVC_AI_SHUTDOWN_TIMEOUT" {
+				return value
+			}
+			return ""
+		})
+		if err == nil {
+			t.Fatalf("value %q succeeded", value)
+		}
 	}
 }
 

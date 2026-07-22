@@ -6,17 +6,22 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
 	DefaultListenAddress     = "127.0.0.1:8090"
 	DefaultMaxConcurrentAsks = 4
+	DefaultShutdownTimeout   = 30 * time.Second
 	maximumMaxConcurrentAsks = 128
+	minimumShutdownTimeout   = time.Second
+	maximumShutdownTimeout   = 5 * time.Minute
 )
 
 type Config struct {
 	ListenAddress     string
 	MaxConcurrentAsks int
+	ShutdownTimeout   time.Duration
 }
 
 func Load() (Config, error) {
@@ -48,5 +53,22 @@ func load(getenv func(string) string) (Config, error) {
 		}
 		maxConcurrentAsks = parsed
 	}
-	return Config{ListenAddress: listenAddress, MaxConcurrentAsks: maxConcurrentAsks}, nil
+	shutdownTimeout := DefaultShutdownTimeout
+	if value := strings.TrimSpace(getenv("OPENSVC_AI_SHUTDOWN_TIMEOUT")); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed < minimumShutdownTimeout || parsed > maximumShutdownTimeout {
+			return Config{}, fmt.Errorf(
+				"parse OPENSVC_AI_SHUTDOWN_TIMEOUT %q: expected a duration between %s and %s",
+				value,
+				minimumShutdownTimeout,
+				maximumShutdownTimeout,
+			)
+		}
+		shutdownTimeout = parsed
+	}
+	return Config{
+		ListenAddress:     listenAddress,
+		MaxConcurrentAsks: maxConcurrentAsks,
+		ShutdownTimeout:   shutdownTimeout,
+	}, nil
 }

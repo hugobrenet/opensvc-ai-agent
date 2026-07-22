@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/agent"
@@ -16,6 +20,8 @@ import (
 	"github.com/hugobrenet/opensvc-ai-agent/internal/llmfactory"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/mcpclient"
 )
+
+const maxHTTPHeaderBytes = 64 << 10
 
 func main() {
 	processConfig, err := config.Load()
@@ -63,15 +69,56 @@ func main() {
 		log.Fatalf("create HTTP API: %v", err)
 	}
 
-	server := &http.Server{
-		Addr:              processConfig.ListenAddress,
+	server := newHTTPServer(processConfig.ListenAddress, handler)
+	listener, err := net.Listen("tcp", processConfig.ListenAddress)
+	if err != nil {
+		log.Fatalf("listen for HTTP API: %v", err)
+	}
+	serveErrors := make(chan error, 1)
+	go func() {
+		serveErrors <- server.Serve(listener)
+	}()
+
+	signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	log.Printf("opensvc-ai-agentd listening on http://%s", processConfig.ListenAddress)
+	select {
+	case err := <-serveErrors:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("serve HTTP API: %v", err)
+		}
+	case <-signalContext.Done():
+		stopSignals()
+		log.Printf("opensvc-ai-agentd shutting down with a %s deadline", processConfig.ShutdownTimeout)
+		if err := shutdownHTTPServer(server, processConfig.ShutdownTimeout); err != nil {
+			log.Printf("force HTTP API shutdown: %v", err)
+		}
+		if err := <-serveErrors; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("serve HTTP API during shutdown: %v", err)
+		}
+	}
+}
+
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    maxHTTPHeaderBytes,
 	}
-	log.Printf("opensvc-ai-agentd listening on http://%s", processConfig.ListenAddress)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("serve HTTP API: %v", err)
+}
+
+func shutdownHTTPServer(server *http.Server, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		shutdownErr := fmt.Errorf("graceful HTTP shutdown: %w", err)
+		if closeErr := server.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+			return errors.Join(shutdownErr, fmt.Errorf("close HTTP server: %w", closeErr))
+		}
+		return shutdownErr
 	}
+	return nil
 }

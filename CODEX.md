@@ -55,13 +55,14 @@ active project step:
      failure codes. Complete.
    - Never log JWTs, authorization headers, prompts, model text, tool arguments
      or results, provider credentials, or raw upstream errors. Complete.
-9. Graceful shutdown and HTTP hardening. Pending.
-   - Drain in-flight asks with a bounded shutdown deadline.
+9. Graceful shutdown and HTTP hardening. Complete.
+   - Drain in-flight asks with a bounded shutdown deadline. Complete.
    - Remove the inbound Authorization header after verification, set an
      explicit maximum header size, and document JWT verification-key rotation.
+     Complete.
 10. One-shot `om ai ask` client integration. Pending.
 
-The next incomplete step is step 9. The OpenSVC JWT belongs only to the MCP
+The next incomplete step is step 10. The OpenSVC JWT belongs only to the MCP
 path. It must never enter an LLM request, LLM context, prompt, tool argument, or
 provider configuration.
 
@@ -136,8 +137,9 @@ The composition root loads and validates HTTP, JWT, LLM, MCP, and agent
 configuration; constructs one shared JWT verifier, LLM client, MCP client, and
 Agent; then injects them into the API handler. `POST /v1/ask` never constructs
 provider clients. Its middleware authenticates the OpenSVC access JWT before
-reading the prompt or starting SSE. `Agent.Ask` then opens and closes one
-request-scoped MCP session using the same JWT.
+reading the prompt or starting SSE, removes the inbound Authorization header,
+and retains the JWT only in private request context. `Agent.Ask` then opens and
+closes one request-scoped MCP session using the same JWT.
 
 `internal/agent` opens one request-scoped MCP session, exposes every discovered
 MCP tool to the model, and executes requested tools sequentially. Tool arguments
@@ -214,6 +216,9 @@ protocol name, never by provider or model name.
   write to complete within 15 seconds.
 - Reject asks above the configured process-wide concurrency limit before SSE
   with HTTP 429, the stable `too_many_requests` code, and `Retry-After`.
+- On SIGINT or SIGTERM, stop accepting requests, drain active asks for the
+  configured shutdown timeout, then close remaining connections so request
+  cancellation propagates to LLM and MCP calls.
 
 ## Go style
 

@@ -32,6 +32,7 @@ func requireAccessToken(verifier auth.TokenVerifier, audit auditLogger, next htt
 		}
 		ctx := auth.WithBearerToken(request.Context(), rawToken)
 		ctx = auth.WithIdentity(ctx, identity)
+		request.Header.Del("Authorization")
 		next.ServeHTTP(response, request.WithContext(ctx))
 	})
 }
