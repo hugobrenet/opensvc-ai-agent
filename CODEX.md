@@ -41,24 +41,27 @@ active project step:
    - Bound the MCP tool count, complete definitions, and individual and
      aggregate model-visible schemas. Complete.
    - Bound protocol-adapter tool-call accumulation. Complete.
-7. Deterministic tool and data-governance policy. Pending.
-   - Default to read-only tools and explicitly allow approved non-destructive
-     diagnostic probes such as `refresh_instance_status`.
-   - Fail closed for unannotated or unauthorized tools, and document that MCP
-     results required for reasoning are sent to the configured LLM provider.
-8. Structured operational audit logging. Pending.
+7. Agent-side tool authorization policy. Deferred until sensitive tools exist.
+   - The agent consumes the bounded MCP catalog dynamically and does not infer
+     OpenSVC permissions from tool names, annotations, or JWT grants.
+   - The OpenSVC daemon API remains authoritative for grant enforcement on each
+     operation. The MCP delegates the caller JWT and returns authorization
+     failures as tool errors for model reasoning.
+   - Design explicit intent confirmation and additional agent policy before
+     exposing destructive or otherwise sensitive tools.
+8. Structured operational audit logging. Complete.
    - Generate a server-side request ID and record bounded structured events for
      authentication rejection, ask lifecycle, tool lifecycle, usage, and stable
-     failure codes.
+     failure codes. Complete.
    - Never log JWTs, authorization headers, prompts, model text, tool arguments
-     or results, provider credentials, or raw upstream errors.
+     or results, provider credentials, or raw upstream errors. Complete.
 9. Graceful shutdown and HTTP hardening. Pending.
    - Drain in-flight asks with a bounded shutdown deadline.
    - Remove the inbound Authorization header after verification, set an
      explicit maximum header size, and document JWT verification-key rotation.
 10. One-shot `om ai ask` client integration. Pending.
 
-The next incomplete step is step 7. The OpenSVC JWT belongs only to the MCP
+The next incomplete step is step 9. The OpenSVC JWT belongs only to the MCP
 path. It must never enter an LLM request, LLM context, prompt, tool argument, or
 provider configuration.
 
@@ -146,6 +149,14 @@ to 128 tools, 512 KiB per complete definition, and 4 MiB total. Model-visible
 names, descriptions, input schemas, and the aggregate catalog have tighter
 bounds. The versioned system prompt belongs to the agent package, not provider
 configuration.
+
+`internal/api` assigns a cryptographically random request ID and emits bounded
+JSON audit records to stdout for authentication rejection, ask rejection and
+lifecycle, tool lifecycle, LLM usage, and stable failure codes. Audit records
+may contain the verified subject and issuer, tool names, counters, durations,
+and finish reasons. They must never contain JWTs, authorization headers,
+prompts, model text, tool arguments or results, provider credentials, grants,
+or raw upstream errors.
 
 The current catalog is small enough to send every tool definition on each LLM
 turn. If the MCP catalog grows, introduce request-scoped tool routing so only a

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/agent"
@@ -52,7 +54,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("create agent: %v", err)
 	}
-	handler, err := api.NewHandler(orchestrator, verifier, api.HandlerConfig{MaxConcurrentAsks: processConfig.MaxConcurrentAsks})
+	auditLogger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	handler, err := api.NewHandler(orchestrator, verifier, api.HandlerConfig{
+		MaxConcurrentAsks: processConfig.MaxConcurrentAsks,
+		AuditLogger:       auditLogger,
+	})
 	if err != nil {
 		log.Fatalf("create HTTP API: %v", err)
 	}

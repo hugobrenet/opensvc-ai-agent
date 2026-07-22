@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -412,15 +413,18 @@ func TestAskReleasesConcurrencySlotAfterCancellation(t *testing.T) {
 }
 
 func TestNewHandlerRejectsNilAgent(t *testing.T) {
-	config := HandlerConfig{MaxConcurrentAsks: 4}
+	config := HandlerConfig{MaxConcurrentAsks: 4, AuditLogger: discardAuditLogger()}
 	if _, err := NewHandler(nil, allowTestTokenVerifier(), config); err == nil {
 		t.Fatal("NewHandler(nil) succeeded")
 	}
 	if _, err := NewHandler(askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil }), nil, config); err == nil {
 		t.Fatal("NewHandler() accepted nil verifier")
 	}
-	if _, err := NewHandler(askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil }), allowTestTokenVerifier(), HandlerConfig{}); err == nil {
+	if _, err := NewHandler(askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil }), allowTestTokenVerifier(), HandlerConfig{AuditLogger: discardAuditLogger()}); err == nil {
 		t.Fatal("NewHandler() accepted zero concurrent asks")
+	}
+	if _, err := NewHandler(askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil }), allowTestTokenVerifier(), HandlerConfig{MaxConcurrentAsks: 4}); err == nil {
+		t.Fatal("NewHandler() accepted nil audit logger")
 	}
 }
 
@@ -444,7 +448,7 @@ func newTestHandler(t *testing.T, asker Asker) http.Handler {
 
 func newTestHandlerWithLimit(t *testing.T, asker Asker, maxConcurrentAsks int) http.Handler {
 	t.Helper()
-	handler, err := NewHandler(asker, allowTestTokenVerifier(), HandlerConfig{MaxConcurrentAsks: maxConcurrentAsks})
+	handler, err := NewHandler(asker, allowTestTokenVerifier(), HandlerConfig{MaxConcurrentAsks: maxConcurrentAsks, AuditLogger: discardAuditLogger()})
 	if err != nil {
 		t.Fatalf("create API handler: %v", err)
 	}
@@ -453,11 +457,15 @@ func newTestHandlerWithLimit(t *testing.T, asker Asker, maxConcurrentAsks int) h
 
 func newTestHandlerWithVerifier(t *testing.T, asker Asker, verifier auth.TokenVerifier) http.Handler {
 	t.Helper()
-	handler, err := NewHandler(asker, verifier, HandlerConfig{MaxConcurrentAsks: 4})
+	handler, err := NewHandler(asker, verifier, HandlerConfig{MaxConcurrentAsks: 4, AuditLogger: discardAuditLogger()})
 	if err != nil {
 		t.Fatalf("create API handler: %v", err)
 	}
 	return handler
+}
+
+func discardAuditLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 func allowTestTokenVerifier() auth.TokenVerifier {

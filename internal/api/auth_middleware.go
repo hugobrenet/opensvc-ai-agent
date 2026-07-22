@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -9,15 +10,23 @@ import (
 
 const maxBearerTokenBytes = 16 << 10
 
-func requireAccessToken(verifier auth.TokenVerifier, next http.Handler) http.Handler {
+func requireAccessToken(verifier auth.TokenVerifier, audit auditLogger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		rawToken, ok := bearerToken(request.Header.Get("Authorization"))
 		if !ok || len(rawToken) > maxBearerTokenBytes {
+			audit.event(request.Context(), "auth_rejected",
+				slog.Int("status", http.StatusUnauthorized),
+				slog.String("code", "unauthorized"),
+			)
 			writeUnauthorized(response)
 			return
 		}
 		identity, err := verifier.Verify(request.Context(), rawToken)
 		if err != nil || identity.Subject == "" {
+			audit.event(request.Context(), "auth_rejected",
+				slog.Int("status", http.StatusUnauthorized),
+				slog.String("code", "unauthorized"),
+			)
 			writeUnauthorized(response)
 			return
 		}

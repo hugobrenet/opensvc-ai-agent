@@ -20,6 +20,9 @@ and repeats until a final answer. An authenticated one-shot ask API exposes the
 agent event stream over SSE. Persistent sessions and om3 integration are not
 implemented yet.
 
+The API emits structured JSON operational audit records to stdout. Every HTTP
+request receives a server-generated `X-Request-ID` for correlation.
+
 The JWT is never stored by the MCP client. It must be attached to the operation
 context and is forwarded only to MCP HTTP requests. The agent masks it from the
 context passed to the LLM client.
@@ -154,6 +157,23 @@ complete within 15 seconds so a client that stops reading cannot retain an ask
 indefinitely. When four asks are already running by default, a new request is
 rejected before SSE with HTTP `429`, error code `too_many_requests`, and a
 `Retry-After` header.
+
+## Operational audit
+
+The daemon writes one-line JSON audit events for authentication and ask
+rejections, ask start and completion, tool start and completion, LLM token
+usage, timeouts, cancellations, and stable failures. Records contain the
+server-generated request ID and may contain the verified subject and issuer,
+tool name, iteration, duration, finish reason, and token counters.
+
+Terminal audit failure codes are `agent_failed`, `agent_cleanup_failed`,
+`agent_incomplete`, `request_timeout`, `request_canceled`, and
+`stream_write_failed`. A functional MCP tool error uses `tool_error` and does
+not make the ask itself a transport failure.
+
+Audit records never contain JWTs, authorization headers, prompts, model text,
+tool arguments or results, provider credentials, grants, or raw errors from the
+LLM, MCP server, or OpenSVC daemon.
 
 ## Development
 

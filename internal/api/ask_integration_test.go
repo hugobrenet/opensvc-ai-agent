@@ -5,6 +5,7 @@ package api_test
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -52,7 +53,10 @@ func TestLiveAskStreamsClusterHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create live JWT verifier: %v", err)
 	}
-	handler, err := api.NewHandler(orchestrator, verifier, api.HandlerConfig{MaxConcurrentAsks: 4})
+	handler, err := api.NewHandler(orchestrator, verifier, api.HandlerConfig{
+		MaxConcurrentAsks: 4,
+		AuditLogger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 	if err != nil {
 		t.Fatalf("create live API: %v", err)
 	}
