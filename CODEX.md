@@ -28,10 +28,35 @@ active project step:
 3. Responses protocol adapter. Complete.
 4. Agent loop coordinating LLM tool calls with MCP tool execution. Complete.
 5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP. Complete.
+6. Runtime availability and cost hardening. Pending.
+   - Add one configurable end-to-end deadline for each ask, including bounded
+     SSE writes and MCP session cleanup.
+   - Add configurable MCP HTTP and operation timeouts, and bound MCP response
+     bodies before the SDK decodes them.
+   - Add process-wide ask admission control returning an HTTP error before SSE,
+     plus per-ask total tool-call and model-usage budgets.
+   - Bound the MCP tool count, individual and aggregate schemas, and
+     protocol-adapter tool-call accumulation.
+7. Deterministic tool and data-governance policy. Pending.
+   - Default to read-only tools and explicitly allow approved non-destructive
+     diagnostic probes such as `refresh_instance_status`.
+   - Fail closed for unannotated or unauthorized tools, and document that MCP
+     results required for reasoning are sent to the configured LLM provider.
+8. Structured operational audit logging. Pending.
+   - Generate a server-side request ID and record bounded structured events for
+     authentication rejection, ask lifecycle, tool lifecycle, usage, and stable
+     failure codes.
+   - Never log JWTs, authorization headers, prompts, model text, tool arguments
+     or results, provider credentials, or raw upstream errors.
+9. Graceful shutdown and HTTP hardening. Pending.
+   - Drain in-flight asks with a bounded shutdown deadline.
+   - Remove the inbound Authorization header after verification, set an
+     explicit maximum header size, and document JWT verification-key rotation.
+10. One-shot `om ai ask` client integration. Pending.
 
-The next project step is not selected. The OpenSVC JWT belongs only to the MCP
-path. It must never enter an LLM request, LLM context, prompt, tool argument, or
-provider configuration.
+Implement step 6 before starting later pending steps. The OpenSVC JWT belongs
+only to the MCP path. It must never enter an LLM request, LLM context, prompt,
+tool argument, or provider configuration.
 
 ## Technology
 
