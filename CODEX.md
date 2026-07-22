@@ -13,10 +13,10 @@ servers remain the deterministic OpenSVC integration layer.
 ## Current scope
 
 The current implementation exposes an HTTP health endpoint, an authenticated
-MCP client, provider-neutral LLM contracts, a Responses protocol adapter, and
-an agent loop coordinating LLM turns with MCP tool calls. Add other protocol
-adapters, HTTP ask endpoints, persistent sessions, or om3 integration code only
-as an explicit project step.
+MCP client, provider-neutral LLM contracts, Responses and Chat Completions
+protocol adapters, and an agent loop coordinating LLM turns with MCP tool calls.
+Add other protocol adapters, HTTP ask endpoints, persistent sessions, or om3
+integration code only as an explicit project step.
 
 ## Build order
 
@@ -74,6 +74,11 @@ internal/
       request.go
       stream.go
       client_test.go
+    chatcompletions/
+      client.go
+      request.go
+      stream.go
+      client_test.go
   llmfactory/
     factory.go
     factory_test.go
@@ -106,10 +111,12 @@ in protocol adapters and must remain an optional optimization.
 configuration. Protocol adapters implement `llm.Client`, map their wire events
 to neutral LLM events, and return transport or provider failures as Go errors.
 
-`internal/llm/responses` implements only the Responses wire protocol using
-`net/http`. It must set `store` to false, bound requests and streams, disable
-redirects, and ignore unknown semantic events. `internal/llmfactory` selects
-clients by protocol name, never by provider or model name.
+`internal/llm/responses` and `internal/llm/chatcompletions` implement their wire
+protocols using `net/http`. They must set `store` to false, bound requests and
+streams, disable redirects, and ignore unknown semantic events. The Chat
+Completions adapter waits for `[DONE]` before emitting neutral completion so a
+trailing usage chunk is preserved. `internal/llmfactory` selects clients by
+protocol name, never by provider or model name.
 
 ## Security invariants
 
@@ -164,7 +171,7 @@ The `integration` build tag may be used for explicit tests against a running
 MCP server. Such tests must read their endpoint and JWT from the environment,
 skip when either is absent, and never print the JWT.
 
-Responses integration tests use the same build tag and generic
+LLM adapter integration tests use the same build tag and generic
 `OPENSVC_AI_LLM_*` environment variables. Never commit gateway URLs, model
 identifiers, or API tokens.
 

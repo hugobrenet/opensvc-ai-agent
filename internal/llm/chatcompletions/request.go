@@ -1,0 +1,111 @@
+package chatcompletions
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/hugobrenet/opensvc-ai-agent/internal/llm"
+)
+
+type createRequest struct {
+	Model               string         `json:"model"`
+	Messages            []message      `json:"messages"`
+	Tools               []functionTool `json:"tools,omitempty"`
+	ToolChoice          string         `json:"tool_choice,omitempty"`
+	Stream              bool           `json:"stream"`
+	StreamOptions       streamOptions  `json:"stream_options"`
+	Store               bool           `json:"store"`
+	MaxCompletionTokens int            `json:"max_completion_tokens"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+type message struct {
+	Role       string         `json:"role"`
+	Content    *string        `json:"content,omitempty"`
+	ToolCalls  []wireToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+type wireToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function wireFunction `json:"function"`
+}
+
+type wireFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type functionTool struct {
+	Type     string             `json:"type"`
+	Function functionDefinition `json:"function"`
+}
+
+type functionDefinition struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+type toolOutput struct {
+	Content json.RawMessage `json:"content"`
+	IsError bool            `json:"is_error"`
+}
+
+func newCreateRequest(model string, maxOutputTokens int, request llm.Request) (createRequest, error) {
+	wire := createRequest{
+		Model:               model,
+		Stream:              true,
+		StreamOptions:       streamOptions{IncludeUsage: true},
+		Store:               false,
+		MaxCompletionTokens: maxOutputTokens,
+	}
+	for _, neutralMessage := range request.Messages {
+		switch neutralMessage.Role {
+		case llm.RoleSystem, llm.RoleUser:
+			content := neutralMessage.Text
+			wire.Messages = append(wire.Messages, message{Role: string(neutralMessage.Role), Content: &content})
+		case llm.RoleAssistant:
+			assistant := message{Role: string(neutralMessage.Role)}
+			if neutralMessage.Text != "" {
+				content := neutralMessage.Text
+				assistant.Content = &content
+			}
+			for _, call := range neutralMessage.ToolCalls {
+				assistant.ToolCalls = append(assistant.ToolCalls, wireToolCall{
+					ID:       call.ID,
+					Type:     "function",
+					Function: wireFunction{Name: call.Name, Arguments: string(call.Arguments)},
+				})
+			}
+			wire.Messages = append(wire.Messages, assistant)
+		case llm.RoleTool:
+			for _, result := range neutralMessage.ToolResults {
+				output, err := json.Marshal(toolOutput{Content: result.Content, IsError: result.IsError})
+				if err != nil {
+					return createRequest{}, fmt.Errorf("encode tool result %q: %w", result.CallID, err)
+				}
+				content := string(output)
+				wire.Messages = append(wire.Messages, message{Role: string(neutralMessage.Role), Content: &content, ToolCallID: result.CallID})
+			}
+		}
+	}
+	for _, tool := range request.Tools {
+		wire.Tools = append(wire.Tools, functionTool{
+			Type: "function",
+			Function: functionDefinition{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.InputSchema,
+			},
+		})
+	}
+	if len(wire.Tools) != 0 {
+		wire.ToolChoice = "auto"
+	}
+	return wire, nil
+}

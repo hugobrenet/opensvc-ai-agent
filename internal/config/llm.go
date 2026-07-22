@@ -9,13 +9,14 @@ import (
 )
 
 const (
-	LLMAPITokenEnv         = "OPENSVC_AI_LLM_API_TOKEN"
-	DefaultLLMTimeout      = 2 * time.Minute
-	DefaultMaxOutputTokens = 4096
-	maximumMaxOutputTokens = 131072
-	LLMProtocolResponses   = "responses"
-	LLMAuthModeNone        = "none"
-	LLMAuthModeBearer      = "bearer"
+	LLMAPITokenEnv             = "OPENSVC_AI_LLM_API_TOKEN"
+	DefaultLLMTimeout          = 2 * time.Minute
+	DefaultMaxOutputTokens     = 4096
+	maximumMaxOutputTokens     = 131072
+	LLMProtocolResponses       = "responses"
+	LLMProtocolChatCompletions = "chat_completions"
+	LLMAuthModeNone            = "none"
+	LLMAuthModeBearer          = "bearer"
 )
 
 // LLMConfig contains non-secret process configuration for one LLM backend.
@@ -50,7 +51,7 @@ func loadLLM(getenv func(string) string) (LLMConfig, error) {
 	if config.Protocol == "" {
 		return LLMConfig{}, fmt.Errorf("OPENSVC_AI_LLM_PROTOCOL is required")
 	}
-	if config.Protocol != LLMProtocolResponses {
+	if config.Protocol != LLMProtocolResponses && config.Protocol != LLMProtocolChatCompletions {
 		return LLMConfig{}, fmt.Errorf("OPENSVC_AI_LLM_PROTOCOL %q is unsupported", config.Protocol)
 	}
 	if config.BaseURL == "" {

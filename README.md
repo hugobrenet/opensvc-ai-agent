@@ -13,11 +13,11 @@ The implementation provides a health endpoint and a request-scoped MCP
 Streamable HTTP client. The client can list and call MCP tools while delegating
 the caller's OpenSVC Bearer JWT. Provider-neutral LLM contracts describe text
 messages, tools, tool calls, tool results, streaming events, and token usage. A
-Responses protocol adapter implements streamed text and function calls using
-the Go standard library. The agent loop discovers MCP tools, lets the LLM select
-them, executes calls, returns results to the LLM, and repeats until a final
-answer. The ask API, persistent sessions, and om3 integration are not
-implemented yet.
+Responses and Chat Completions protocol adapters implement streamed text and
+function calls using the Go standard library. The agent loop discovers MCP
+tools, lets the LLM select them, executes calls, returns results to the LLM,
+and repeats until a final answer. The ask API, persistent sessions, and om3
+integration are not implemented yet.
 
 The JWT is never stored by the MCP client. It must be attached to the operation
 context and is forwarded only to MCP HTTP requests. The agent masks it from the
@@ -29,12 +29,13 @@ provider name.
 
 ## LLM configuration
 
-The Responses adapter uses generic process configuration:
+Both LLM adapters use generic process configuration. The factory selects the
+wire contract from `OPENSVC_AI_LLM_PROTOCOL` explicitly:
 
 | Variable | Description |
 | --- | --- |
-| `OPENSVC_AI_LLM_PROTOCOL` | Wire protocol. Currently `responses`. |
-| `OPENSVC_AI_LLM_BASE_URL` | API root; the adapter appends `/responses`. |
+| `OPENSVC_AI_LLM_PROTOCOL` | Wire protocol: `responses` or `chat_completions`. |
+| `OPENSVC_AI_LLM_BASE_URL` | API root; the selected adapter appends `/responses` or `/chat/completions`. |
 | `OPENSVC_AI_LLM_MODEL` | Model identifier understood by the configured endpoint. |
 | `OPENSVC_AI_LLM_AUTH_MODE` | `none` or `bearer`. |
 | `OPENSVC_AI_LLM_API_TOKEN` | Bearer token when authentication is enabled. |
@@ -111,11 +112,13 @@ go test -tags=integration ./internal/mcpclient
 The test initializes an MCP session and lists the available tools. It never
 prints the JWT.
 
-The Responses adapter also has opt-in live text and synthetic tool-call tests.
-After exporting the generic LLM variables, run:
+Each LLM adapter has opt-in live text and synthetic tool-call tests. After
+exporting the generic LLM variables, run the directory matching the configured
+protocol:
 
 ```bash
 go test -tags=integration ./internal/llm/responses
+go test -tags=integration ./internal/llm/chatcompletions
 ```
 
 The complete agent loop can be tested against both services by exporting the

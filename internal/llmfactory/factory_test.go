@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/config"
+	"github.com/hugobrenet/opensvc-ai-agent/internal/llm/chatcompletions"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/llm/responses"
 )
 
@@ -24,6 +25,23 @@ func TestNewSelectsResponsesProtocol(t *testing.T) {
 	}
 	if _, ok := client.(*responses.Client); !ok {
 		t.Fatalf("got client type %T, want Responses client", client)
+	}
+}
+
+func TestNewSelectsChatCompletionsProtocol(t *testing.T) {
+	client, err := New(config.LLMConfig{
+		Protocol:        config.LLMProtocolChatCompletions,
+		BaseURL:         "https://llm.example.test/v1",
+		Model:           "test-model",
+		AuthMode:        config.LLMAuthModeNone,
+		Timeout:         time.Minute,
+		MaxOutputTokens: 1024,
+	}, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("create LLM client: %v", err)
+	}
+	if _, ok := client.(*chatcompletions.Client); !ok {
+		t.Fatalf("got client type %T, want Chat Completions client", client)
 	}
 }
 

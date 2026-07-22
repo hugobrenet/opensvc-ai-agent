@@ -47,6 +47,22 @@ func TestLoadLLMDefaultsForLocalBackend(t *testing.T) {
 	}
 }
 
+func TestLoadLLMAcceptsChatCompletions(t *testing.T) {
+	values := map[string]string{
+		"OPENSVC_AI_LLM_PROTOCOL":  LLMProtocolChatCompletions,
+		"OPENSVC_AI_LLM_BASE_URL":  "http://127.0.0.1:8081/v1",
+		"OPENSVC_AI_LLM_MODEL":     "local-model",
+		"OPENSVC_AI_LLM_AUTH_MODE": "none",
+	}
+	config, err := loadLLM(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatalf("load Chat Completions config: %v", err)
+	}
+	if config.Protocol != LLMProtocolChatCompletions {
+		t.Fatalf("got protocol %q", config.Protocol)
+	}
+}
+
 func TestLoadLLMRejectsInvalidConfiguration(t *testing.T) {
 	valid := map[string]string{
 		"OPENSVC_AI_LLM_PROTOCOL":  "responses",
