@@ -72,7 +72,8 @@ For each request, the agent opens an MCP session, lists all available tools,
 and sends their schemas to the LLM. Tool calls run sequentially, with at most
 four calls in one LLM turn. Functional tool errors are returned to the model so
 it can explain or recover; MCP transport errors stop the request. Tool arguments
-are limited to 256 KiB and encoded MCP results to 1 MiB.
+are limited to 256 KiB and encoded MCP results to 1 MiB. Every MCP HTTP response
+is limited to 4 MiB before the MCP SDK decodes it.
 
 No endpoint, model, or token has a project default. Plain HTTP endpoints must
 use a loopback IP. The token value is checked at configuration time, read again

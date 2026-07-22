@@ -36,7 +36,10 @@ func New(endpoint string, httpClient *http.Client) (*Client, error) {
 	if baseTransport == nil {
 		baseTransport = http.DefaultTransport
 	}
-	clientCopy.Transport = bearerTransport{base: baseTransport}
+	clientCopy.Transport = responseLimitTransport{
+		base:     bearerTransport{base: baseTransport},
+		maxBytes: maxMCPResponseBodyBytes,
+	}
 
 	return &Client{endpoint: endpoint, httpClient: &clientCopy}, nil
 }
