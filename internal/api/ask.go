@@ -56,13 +56,19 @@ type APIError struct {
 	Message string `json:"message"`
 }
 
-func serveAsk(asker Asker) http.HandlerFunc {
+func serveAsk(asker Asker, limiter *askLimiter) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		askRequest, status, apiError := decodeAskRequest(response, request)
 		if apiError != nil {
 			writeJSONError(response, status, apiError.Code, apiError.Message)
 			return
 		}
+		if !limiter.tryAcquire() {
+			response.Header().Set("Retry-After", "1")
+			writeJSONError(response, http.StatusTooManyRequests, "too_many_requests", "too many agent requests are already running")
+			return
+		}
+		defer limiter.release()
 		flusher, ok := response.(http.Flusher)
 		if !ok {
 			writeJSONError(response, http.StatusInternalServerError, "streaming_unavailable", "response streaming is unavailable")

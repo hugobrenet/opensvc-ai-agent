@@ -52,7 +52,7 @@ func TestLiveAskStreamsClusterHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create live JWT verifier: %v", err)
 	}
-	handler, err := api.NewHandler(orchestrator, verifier)
+	handler, err := api.NewHandler(orchestrator, verifier, api.HandlerConfig{MaxConcurrentAsks: 4})
 	if err != nil {
 		t.Fatalf("create live API: %v", err)
 	}

@@ -206,6 +206,23 @@ func TestAskEnforcesMaxIterationsBeforeCallingTool(t *testing.T) {
 	}
 }
 
+func TestAskEnforcesTotalToolCallLimit(t *testing.T) {
+	session := &fakeSession{tools: []*mcp.Tool{{Name: "get_cluster_health", InputSchema: objectSchema()}}}
+	steps := make([]llmStep, 0, maxToolCallsPerAsk/maxToolCallsPerTurn+1)
+	for iteration := 0; iteration <= maxToolCallsPerAsk/maxToolCallsPerTurn; iteration++ {
+		steps = append(steps, multipleToolCallStep("get_cluster_health", maxToolCallsPerTurn))
+	}
+	model := &scriptedLLM{t: t, steps: steps}
+	agent := newTestAgent(t, model, session, len(steps)+1)
+	err := agent.Ask(t.Context(), "health", func(Event) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "maximum of 16") {
+		t.Fatalf("Ask() error = %v, want total tool call limit", err)
+	}
+	if len(session.calls) != maxToolCallsPerAsk {
+		t.Fatalf("executed %d tools, want exactly %d before rejection", len(session.calls), maxToolCallsPerAsk)
+	}
+}
+
 func TestAskPropagatesMCPAndConsumerErrorsAndClosesSession(t *testing.T) {
 	consumerError := errors.New("stop")
 	for _, test := range []struct {
@@ -353,6 +370,18 @@ func toolCallStep(name string, callID string) llmStep {
 			llm.Event{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{ID: callID, Name: name, Arguments: json.RawMessage(`{}`)}},
 			llm.Event{Type: llm.EventCompleted, FinishReason: llm.FinishReasonToolCalls},
 		)
+	}
+}
+
+func multipleToolCallStep(name string, count int) llmStep {
+	return func(_ llm.Request, emit llm.EmitFunc) error {
+		for index := 0; index < count; index++ {
+			call := &llm.ToolCall{ID: fmt.Sprintf("call-%d", index), Name: name, Arguments: json.RawMessage(`{}`)}
+			if err := emit(llm.Event{Type: llm.EventToolCall, ToolCall: call}); err != nil {
+				return err
+			}
+		}
+		return emit(llm.Event{Type: llm.EventCompleted, FinishReason: llm.FinishReasonToolCalls})
 	}
 }
 

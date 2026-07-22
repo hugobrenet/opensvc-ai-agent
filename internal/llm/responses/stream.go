@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	maxStreamBytes = 16 << 20
-	maxLineBytes   = 1 << 20
-	maxEventBytes  = 2 << 20
+	maxStreamBytes          = 16 << 20
+	maxLineBytes            = 1 << 20
+	maxEventBytes           = 2 << 20
+	maxPendingToolCallCount = 128
 )
 
 type pendingCall struct {
@@ -114,7 +115,11 @@ func (s *streamState) consume(data []byte) error {
 			return fmt.Errorf("decode output item: %w", err)
 		}
 		if event.Item.Type == "function_call" {
-			s.calls[event.OutputIndex] = &pendingCall{call: llm.ToolCall{ID: event.Item.CallID, Name: event.Item.Name, Arguments: json.RawMessage(event.Item.Arguments)}}
+			call, err := s.getOrCreateCall(event.OutputIndex)
+			if err != nil {
+				return err
+			}
+			call.call = llm.ToolCall{ID: event.Item.CallID, Name: event.Item.Name, Arguments: json.RawMessage(event.Item.Arguments)}
 		}
 	case "response.function_call_arguments.delta":
 		var event struct {
@@ -157,10 +162,9 @@ func (s *streamState) consume(data []byte) error {
 			return fmt.Errorf("decode completed output item: %w", err)
 		}
 		if event.Item.Type == "function_call" {
-			call, ok := s.calls[event.OutputIndex]
-			if !ok {
-				call = &pendingCall{}
-				s.calls[event.OutputIndex] = call
+			call, err := s.getOrCreateCall(event.OutputIndex)
+			if err != nil {
+				return err
 			}
 			if call.emitted {
 				return nil
@@ -256,8 +260,11 @@ func (s *streamState) emitCallsFromResponse(items []wireItem) error {
 		}
 		call, ok := s.calls[index]
 		if !ok {
-			call = &pendingCall{}
-			s.calls[index] = call
+			var err error
+			call, err = s.getOrCreateCall(index)
+			if err != nil {
+				return err
+			}
 		}
 		if !call.emitted {
 			call.call = llm.ToolCall{ID: item.CallID, Name: item.Name, Arguments: json.RawMessage(item.Arguments)}
@@ -267,6 +274,21 @@ func (s *streamState) emitCallsFromResponse(items []wireItem) error {
 		}
 	}
 	return nil
+}
+
+func (s *streamState) getOrCreateCall(index int) (*pendingCall, error) {
+	if index < 0 {
+		return nil, fmt.Errorf("function call has invalid output index %d", index)
+	}
+	if call, ok := s.calls[index]; ok {
+		return call, nil
+	}
+	if len(s.calls) >= maxPendingToolCallCount {
+		return nil, fmt.Errorf("pending tool call count exceeds %d", maxPendingToolCallCount)
+	}
+	call := &pendingCall{}
+	s.calls[index] = call
+	return call, nil
 }
 
 func (s *streamState) emitCall(call *pendingCall) error {

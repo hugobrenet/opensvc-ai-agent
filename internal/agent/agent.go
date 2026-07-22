@@ -81,6 +81,7 @@ func (a *Agent) Ask(ctx context.Context, prompt string, emit EmitFunc) (err erro
 		{Role: llm.RoleUser, Text: prompt},
 	}
 	llmContext := auth.WithoutAuthentication(ctx)
+	totalToolCalls := 0
 
 	for iteration := 1; iteration <= a.config.MaxIterations; iteration++ {
 		var (
@@ -99,6 +100,9 @@ func (a *Agent) Ask(ctx context.Context, prompt string, emit EmitFunc) (err erro
 				turnText.WriteString(event.TextDelta)
 				return emitAgentEvent(emit, Event{Type: EventTextDelta, TextDelta: event.TextDelta, Iteration: iteration})
 			case llm.EventToolCall:
+				if len(calls) >= maxToolCallsPerTurn {
+					return fmt.Errorf("LLM iteration %d requested %d tools, maximum is %d", iteration, len(calls)+1, maxToolCallsPerTurn)
+				}
 				call := *event.ToolCall
 				call.Arguments = append(json.RawMessage(nil), event.ToolCall.Arguments...)
 				calls = append(calls, call)
@@ -134,11 +138,15 @@ func (a *Agent) Ask(ctx context.Context, prompt string, emit EmitFunc) (err erro
 		if len(calls) > maxToolCallsPerTurn {
 			return fmt.Errorf("LLM iteration %d requested %d tools, maximum is %d", iteration, len(calls), maxToolCallsPerTurn)
 		}
+		if totalToolCalls+len(calls) > maxToolCallsPerAsk {
+			return fmt.Errorf("agent tool call count would exceed maximum of %d", maxToolCallsPerAsk)
+		}
 		if iteration == a.config.MaxIterations {
 			return fmt.Errorf("agent reached maximum of %d iterations before a final answer", a.config.MaxIterations)
 		}
 
 		results := make([]llm.ToolResult, 0, len(calls))
+		totalToolCalls += len(calls)
 		for _, call := range calls {
 			if _, ok := toolNames[call.Name]; !ok {
 				return fmt.Errorf("LLM requested unknown MCP tool %q", call.Name)

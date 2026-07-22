@@ -28,6 +28,13 @@ The neutral LLM package has no provider, HTTP, credential, or model
 configuration. The factory selects an adapter by wire protocol, never by
 provider name.
 
+## API configuration
+
+| Variable | Description |
+| --- | --- |
+| `OPENSVC_AI_LISTEN_ADDRESS` | Loopback listen address, default `127.0.0.1:8090`. |
+| `OPENSVC_AI_MAX_CONCURRENT_ASKS` | Process-wide concurrent ask limit, default `4`, maximum `128`. |
+
 ## LLM configuration
 
 Both LLM adapters use generic process configuration. The factory selects the
@@ -70,14 +77,15 @@ verified by MCP and delegated to the OpenSVC daemon for grant enforcement.
 
 For each request, the agent opens an MCP session, lists all available tools,
 and sends their schemas to the LLM. Tool calls run sequentially, with at most
-four calls in one LLM turn. Functional tool errors are returned to the model so
-it can explain or recover; MCP transport errors stop the request. Tool arguments
-are limited to 256 KiB and encoded MCP results to 1 MiB. Every MCP HTTP response
-is limited to 4 MiB before the MCP SDK decodes it. The agent rejects catalogs
-larger than 128 tools, individual encoded definitions larger than 512 KiB, or
-an aggregate encoded catalog larger than 4 MiB. Model-visible tool names,
-descriptions, and input schemas are additionally limited to 128 bytes, 4 KiB,
-and 256 KiB respectively, with a 1 MiB aggregate limit.
+four calls in one LLM turn and sixteen calls in one ask. Functional tool errors
+are returned to the model so it can explain or recover; MCP transport errors
+stop the request. Tool arguments are limited to 256 KiB and encoded MCP results
+to 1 MiB. Every MCP HTTP response is limited to 4 MiB before the MCP SDK decodes
+it. The agent rejects catalogs larger than 128 tools, individual encoded
+definitions larger than 512 KiB, or an aggregate encoded catalog larger than 4
+MiB. Model-visible tool names, descriptions, and input schemas are additionally
+limited to 128 bytes, 4 KiB, and 256 KiB respectively, with a 1 MiB aggregate
+limit.
 
 No endpoint, model, or token has a project default. Plain HTTP endpoints must
 use a loopback IP. The token value is checked at configuration time, read again
@@ -143,7 +151,9 @@ failures use a generic terminal `error` SSE event because the HTTP 200 response
 has already started. The stable error code is `agent_failed`, or
 `request_timeout` when an operation deadline expires. Each SSE write must
 complete within 15 seconds so a client that stops reading cannot retain an ask
-indefinitely.
+indefinitely. When four asks are already running by default, a new request is
+rejected before SSE with HTTP `429`, error code `too_many_requests`, and a
+`Retry-After` header.
 
 ## Development
 

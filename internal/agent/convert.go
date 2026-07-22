@@ -12,6 +12,7 @@ import (
 
 const (
 	maxToolCallsPerTurn      = 4
+	maxToolCallsPerAsk       = 16
 	maxToolArguments         = 256 << 10
 	maxToolResult            = 1 << 20
 	maxToolNameBytes         = 128

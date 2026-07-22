@@ -52,7 +52,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("create agent: %v", err)
 	}
-	handler, err := api.NewHandler(orchestrator, verifier)
+	handler, err := api.NewHandler(orchestrator, verifier, api.HandlerConfig{MaxConcurrentAsks: processConfig.MaxConcurrentAsks})
 	if err != nil {
 		log.Fatalf("create HTTP API: %v", err)
 	}

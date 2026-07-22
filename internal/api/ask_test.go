@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -307,12 +308,119 @@ func TestWriteSSEEnforcesStreamBound(t *testing.T) {
 	}
 }
 
+func TestAskRejectsWhenConcurrencyLimitIsReached(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan struct{})
+	var calls atomic.Int64
+	asker := askerFunc(func(_ context.Context, _ string, emit agent.EmitFunc) error {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return emit(agent.Event{Type: agent.EventCompleted, FinishReason: llm.FinishReasonCompleted, Iteration: 1})
+	})
+	handler := newTestHandlerWithLimit(t, asker, 1)
+
+	firstRequest := newAuthenticatedAskRequest(`{"prompt":"first"}`)
+	firstResponse := httptest.NewRecorder()
+	go func() {
+		defer close(firstDone)
+		handler.ServeHTTP(firstResponse, firstRequest)
+	}()
+	<-started
+
+	secondResponse := httptest.NewRecorder()
+	handler.ServeHTTP(secondResponse, newAuthenticatedAskRequest(`{"prompt":"second"}`))
+	if secondResponse.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want 429", secondResponse.Code)
+	}
+	if secondResponse.Header().Get("Retry-After") != "1" {
+		t.Fatalf("Retry-After = %q, want 1", secondResponse.Header().Get("Retry-After"))
+	}
+	var errorResponse ErrorResponse
+	if err := json.NewDecoder(secondResponse.Body).Decode(&errorResponse); err != nil {
+		t.Fatalf("decode 429 response: %v", err)
+	}
+	if errorResponse.Error.Code != "too_many_requests" {
+		t.Fatalf("error code = %q, want too_many_requests", errorResponse.Error.Code)
+	}
+
+	close(release)
+	<-firstDone
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want 200", firstResponse.Code)
+	}
+
+	thirdResponse := httptest.NewRecorder()
+	handler.ServeHTTP(thirdResponse, newAuthenticatedAskRequest(`{"prompt":"third"}`))
+	if thirdResponse.Code != http.StatusOK {
+		t.Fatalf("third status = %d, want released slot", thirdResponse.Code)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("agent calls = %d, want first and third only", calls.Load())
+	}
+}
+
+func TestAskReleasesConcurrencySlotAfterAgentError(t *testing.T) {
+	var calls atomic.Int64
+	handler := newTestHandlerWithLimit(t, askerFunc(func(context.Context, string, agent.EmitFunc) error {
+		calls.Add(1)
+		return errors.New("agent failed")
+	}), 1)
+
+	for _, prompt := range []string{"first", "second"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, newAuthenticatedAskRequest(fmt.Sprintf(`{"prompt":%q}`, prompt)))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want streaming 200", prompt, response.Code)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("agent calls = %d, want slot released after error", calls.Load())
+	}
+}
+
+func TestAskReleasesConcurrencySlotAfterCancellation(t *testing.T) {
+	started := make(chan struct{})
+	done := make(chan struct{})
+	var calls atomic.Int64
+	handler := newTestHandlerWithLimit(t, askerFunc(func(ctx context.Context, _ string, emit agent.EmitFunc) error {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return emit(agent.Event{Type: agent.EventCompleted, FinishReason: llm.FinishReasonCompleted, Iteration: 1})
+	}), 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	firstRequest := newAuthenticatedAskRequest(`{"prompt":"first"}`).WithContext(ctx)
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(httptest.NewRecorder(), firstRequest)
+	}()
+	<-started
+	cancel()
+	<-done
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, newAuthenticatedAskRequest(`{"prompt":"second"}`))
+	if response.Code != http.StatusOK || calls.Load() != 2 {
+		t.Fatalf("second status=%d calls=%d, want released slot", response.Code, calls.Load())
+	}
+}
+
 func TestNewHandlerRejectsNilAgent(t *testing.T) {
-	if _, err := NewHandler(nil, allowTestTokenVerifier()); err == nil {
+	config := HandlerConfig{MaxConcurrentAsks: 4}
+	if _, err := NewHandler(nil, allowTestTokenVerifier(), config); err == nil {
 		t.Fatal("NewHandler(nil) succeeded")
 	}
-	if _, err := NewHandler(askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil }), nil); err == nil {
+	if _, err := NewHandler(askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil }), nil, config); err == nil {
 		t.Fatal("NewHandler() accepted nil verifier")
+	}
+	if _, err := NewHandler(askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil }), allowTestTokenVerifier(), HandlerConfig{}); err == nil {
+		t.Fatal("NewHandler() accepted zero concurrent asks")
 	}
 }
 
@@ -334,9 +442,18 @@ func newTestHandler(t *testing.T, asker Asker) http.Handler {
 	return newTestHandlerWithVerifier(t, asker, allowTestTokenVerifier())
 }
 
+func newTestHandlerWithLimit(t *testing.T, asker Asker, maxConcurrentAsks int) http.Handler {
+	t.Helper()
+	handler, err := NewHandler(asker, allowTestTokenVerifier(), HandlerConfig{MaxConcurrentAsks: maxConcurrentAsks})
+	if err != nil {
+		t.Fatalf("create API handler: %v", err)
+	}
+	return handler
+}
+
 func newTestHandlerWithVerifier(t *testing.T, asker Asker, verifier auth.TokenVerifier) http.Handler {
 	t.Helper()
-	handler, err := NewHandler(asker, verifier)
+	handler, err := NewHandler(asker, verifier, HandlerConfig{MaxConcurrentAsks: 4})
 	if err != nil {
 		t.Fatalf("create API handler: %v", err)
 	}
@@ -347,6 +464,13 @@ func allowTestTokenVerifier() auth.TokenVerifier {
 	return tokenVerifierFunc(func(context.Context, string) (auth.Identity, error) {
 		return auth.Identity{Subject: "test-user", Issuer: "test-node"}, nil
 	})
+}
+
+func newAuthenticatedAskRequest(body string) *http.Request {
+	request := httptest.NewRequest(http.MethodPost, "/v1/ask", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("Content-Type", "application/json")
+	return request
 }
 
 func decodeSSEEvents(t *testing.T, body string) []AskEvent {

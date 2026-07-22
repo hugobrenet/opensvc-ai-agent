@@ -12,16 +12,24 @@ type HealthResponse struct {
 	Status string `json:"status"`
 }
 
-func NewHandler(asker Asker, verifier auth.TokenVerifier) (http.Handler, error) {
+type HandlerConfig struct {
+	MaxConcurrentAsks int
+}
+
+func NewHandler(asker Asker, verifier auth.TokenVerifier, config HandlerConfig) (http.Handler, error) {
 	if asker == nil {
 		return nil, fmt.Errorf("API agent is nil")
 	}
 	if verifier == nil {
 		return nil, fmt.Errorf("API token verifier is nil")
 	}
+	if config.MaxConcurrentAsks <= 0 {
+		return nil, fmt.Errorf("API max concurrent asks must be positive")
+	}
+	limiter := newAskLimiter(config.MaxConcurrentAsks)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", getHealth)
-	mux.Handle("POST /v1/ask", requireAccessToken(verifier, serveAsk(asker)))
+	mux.Handle("POST /v1/ask", requireAccessToken(verifier, serveAsk(asker, limiter)))
 	return mux, nil
 }
 

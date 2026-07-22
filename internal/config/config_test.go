@@ -18,10 +18,10 @@ func TestLoad(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			config, err := load(func(key string) string {
-				if key != "OPENSVC_AI_LISTEN_ADDRESS" {
-					t.Fatalf("unexpected environment key %q", key)
+				if key == "OPENSVC_AI_LISTEN_ADDRESS" {
+					return test.value
 				}
-				return test.value
+				return ""
 			})
 			if test.wantErr {
 				if err == nil {
@@ -35,6 +35,36 @@ func TestLoad(t *testing.T) {
 			if config.ListenAddress != test.want {
 				t.Errorf("got listen address %q, want %q", config.ListenAddress, test.want)
 			}
+			if config.MaxConcurrentAsks != DefaultMaxConcurrentAsks {
+				t.Errorf("got max concurrent asks %d, want %d", config.MaxConcurrentAsks, DefaultMaxConcurrentAsks)
+			}
 		})
+	}
+}
+
+func TestLoadMaxConcurrentAsks(t *testing.T) {
+	config, err := load(func(key string) string {
+		if key == "OPENSVC_AI_MAX_CONCURRENT_ASKS" {
+			return "12"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.MaxConcurrentAsks != 12 {
+		t.Fatalf("got max concurrent asks %d, want 12", config.MaxConcurrentAsks)
+	}
+
+	for _, value := range []string{"invalid", "0", "129"} {
+		_, err := load(func(key string) string {
+			if key == "OPENSVC_AI_MAX_CONCURRENT_ASKS" {
+				return value
+			}
+			return ""
+		})
+		if err == nil {
+			t.Fatalf("value %q succeeded", value)
+		}
 	}
 }

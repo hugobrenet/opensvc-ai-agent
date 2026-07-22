@@ -28,17 +28,19 @@ active project step:
 3. Responses protocol adapter. Complete.
 4. Agent loop coordinating LLM tool calls with MCP tool execution. Complete.
 5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP. Complete.
-6. Runtime availability and cost hardening. Pending.
+6. Runtime availability and cost hardening. Complete.
    - Add one configurable end-to-end deadline for each ask, including bounded
      SSE writes and MCP session cleanup. Complete.
    - Bound MCP response bodies before the SDK decodes them. Complete. Tool
      execution and OpenSVC daemon request timeouts belong to the MCP server; the
      agent keeps only its end-to-end ask deadline.
-   - Add process-wide ask admission control returning an HTTP error before SSE,
-     plus per-ask total tool-call and model-usage budgets.
+   - Add process-wide ask admission control returning an HTTP error before SSE
+     and a per-ask total tool-call budget. Complete. Model work is bounded by
+     maximum iterations, per-request output tokens, and request and stream size
+     limits.
    - Bound the MCP tool count, complete definitions, and individual and
      aggregate model-visible schemas. Complete.
-   - Bound protocol-adapter tool-call accumulation.
+   - Bound protocol-adapter tool-call accumulation. Complete.
 7. Deterministic tool and data-governance policy. Pending.
    - Default to read-only tools and explicitly allow approved non-destructive
      diagnostic probes such as `refresh_instance_status`.
@@ -56,9 +58,9 @@ active project step:
      explicit maximum header size, and document JWT verification-key rotation.
 10. One-shot `om ai ask` client integration. Pending.
 
-Implement step 6 before starting later pending steps. The OpenSVC JWT belongs
-only to the MCP path. It must never enter an LLM request, LLM context, prompt,
-tool argument, or provider configuration.
+The next incomplete step is step 7. The OpenSVC JWT belongs only to the MCP
+path. It must never enter an LLM request, LLM context, prompt, tool argument, or
+provider configuration.
 
 ## Technology
 
@@ -136,13 +138,14 @@ request-scoped MCP session using the same JWT.
 
 `internal/agent` opens one request-scoped MCP session, exposes every discovered
 MCP tool to the model, and executes requested tools sequentially. Tool arguments
-are limited to 256 KiB, results to 1 MiB, and each LLM turn to four tool calls.
-Functional MCP tool errors return to the model; MCP transport errors stop the
-run. The MCP HTTP transport rejects response bodies larger than 4 MiB before the
-SDK decodes them. MCP catalogs are limited to 128 tools, 512 KiB per complete
-definition, and 4 MiB total. Model-visible names, descriptions, input schemas,
-and the aggregate catalog have tighter bounds. The versioned system prompt
-belongs to the agent package, not provider configuration.
+are limited to 256 KiB, results to 1 MiB, each LLM turn to four tool calls, and
+each ask to sixteen tool calls. Functional MCP tool errors return to the model;
+MCP transport errors stop the run. The MCP HTTP transport rejects response
+bodies larger than 4 MiB before the SDK decodes them. MCP catalogs are limited
+to 128 tools, 512 KiB per complete definition, and 4 MiB total. Model-visible
+names, descriptions, input schemas, and the aggregate catalog have tighter
+bounds. The versioned system prompt belongs to the agent package, not provider
+configuration.
 
 The current catalog is small enough to send every tool definition on each LLM
 turn. If the MCP catalog grows, introduce request-scoped tool routing so only a
@@ -198,6 +201,8 @@ protocol name, never by provider or model name.
   terminal SSE error because the HTTP status can no longer change. Use the
   stable `request_timeout` code for deadline expiration and require each SSE
   write to complete within 15 seconds.
+- Reject asks above the configured process-wide concurrency limit before SSE
+  with HTTP 429, the stable `too_many_requests` code, and `Retry-After`.
 
 ## Go style
 
