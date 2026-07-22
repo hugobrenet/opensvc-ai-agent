@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/agent"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/auth"
@@ -221,6 +222,43 @@ func TestAskStreamsGenericRuntimeError(t *testing.T) {
 	}
 }
 
+func TestAskStreamsTimeoutError(t *testing.T) {
+	handler := newTestHandler(t, askerFunc(func(context.Context, string, agent.EmitFunc) error {
+		return context.DeadlineExceeded
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/v1/ask", strings.NewReader(`{"prompt":"health"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	events := decodeSSEEvents(t, response.Body.String())
+	if len(events) != 1 || events[0].Type != "error" || events[0].Code != "request_timeout" {
+		t.Fatalf("unexpected timeout events %#v", events)
+	}
+}
+
+func TestAskSetsAndClearsWriteDeadline(t *testing.T) {
+	response := &writeDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler := newTestHandler(t, askerFunc(func(_ context.Context, _ string, emit agent.EmitFunc) error {
+		return emit(agent.Event{Type: agent.EventCompleted, FinishReason: llm.FinishReasonCompleted, Iteration: 1})
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/v1/ask", strings.NewReader(`{"prompt":"health"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(response, request)
+
+	if len(response.deadlines) < 2 {
+		t.Fatalf("got %d write deadlines, want active and cleared deadlines", len(response.deadlines))
+	}
+	if response.deadlines[0].IsZero() {
+		t.Fatal("first write deadline is zero")
+	}
+	if !response.deadlines[len(response.deadlines)-1].IsZero() {
+		t.Fatal("final write deadline was not cleared")
+	}
+}
+
 func TestAskDoesNotEmitAfterCompleted(t *testing.T) {
 	handler := newTestHandler(t, askerFunc(func(_ context.Context, _ string, emit agent.EmitFunc) error {
 		if err := emit(agent.Event{Type: agent.EventCompleted, FinishReason: llm.FinishReasonCompleted, Iteration: 1}); err != nil {
@@ -276,6 +314,16 @@ func TestNewHandlerRejectsNilAgent(t *testing.T) {
 	if _, err := NewHandler(askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil }), nil); err == nil {
 		t.Fatal("NewHandler() accepted nil verifier")
 	}
+}
+
+type writeDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadlines []time.Time
+}
+
+func (r *writeDeadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	r.deadlines = append(r.deadlines, deadline)
+	return nil
 }
 
 func newTestHandler(t *testing.T, asker Asker) http.Handler {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/auth"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/llm"
@@ -246,6 +247,24 @@ func TestAskPropagatesMCPAndConsumerErrorsAndClosesSession(t *testing.T) {
 	}
 }
 
+func TestAskTimesOutAndClosesMCPSession(t *testing.T) {
+	session := &fakeSession{}
+	model := &deadlineLLM{}
+	agent, err := New(model, func(context.Context) (MCPSession, error) {
+		return session, nil
+	}, Config{MaxIterations: 2, Timeout: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	err = agent.Ask(t.Context(), "health", func(Event) error { return nil })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Ask() error = %v, want deadline exceeded", err)
+	}
+	if !session.closed {
+		t.Fatal("MCP session was not closed after timeout")
+	}
+}
+
 type llmStep func(llm.Request, llm.EmitFunc) error
 
 type scriptedLLM struct {
@@ -266,6 +285,13 @@ func (c *scriptedLLM) Stream(ctx context.Context, request llm.Request, emit llm.
 	step := c.steps[c.position]
 	c.position++
 	return step(request, emit)
+}
+
+type deadlineLLM struct{}
+
+func (*deadlineLLM) Stream(ctx context.Context, _ llm.Request, _ llm.EmitFunc) error {
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 type recordedCall struct {
@@ -310,7 +336,7 @@ func newTestAgent(t *testing.T, model llm.Client, session *fakeSession, maxItera
 			session.connectedWithJWT = true
 		}
 		return session, nil
-	}, Config{MaxIterations: maxIterations})
+	}, Config{MaxIterations: maxIterations, Timeout: time.Minute})
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}

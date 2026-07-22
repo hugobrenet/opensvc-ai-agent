@@ -30,9 +30,10 @@ active project step:
 5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP. Complete.
 6. Runtime availability and cost hardening. Pending.
    - Add one configurable end-to-end deadline for each ask, including bounded
-     SSE writes and MCP session cleanup.
-   - Add configurable MCP HTTP and operation timeouts, and bound MCP response
-     bodies before the SDK decodes them.
+     SSE writes and MCP session cleanup. Complete.
+   - Bound MCP response bodies before the SDK decodes them. Tool execution and
+     OpenSVC daemon request timeouts belong to the MCP server; the agent keeps
+     only its end-to-end ask deadline.
    - Add process-wide ask admission control returning an HTTP error before SSE,
      plus per-ask total tool-call and model-usage budgets.
    - Bound the MCP tool count, individual and aggregate schemas, and
@@ -190,7 +191,9 @@ protocol name, never by provider or model name.
   expose tool arguments, tool results, provider errors, or credentials.
 - Reject invalid authentication, media types, JSON, and prompt bounds before
   starting SSE. Once streaming starts, report runtime failures as a generic
-  terminal SSE error because the HTTP status can no longer change.
+  terminal SSE error because the HTTP status can no longer change. Use the
+  stable `request_timeout` code for deadline expiration and require each SSE
+  write to complete within 15 seconds.
 
 ## Go style
 

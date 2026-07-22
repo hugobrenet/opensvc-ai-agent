@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/agent"
 )
@@ -17,6 +18,7 @@ const (
 	maxAskRequestBytes = 64 << 10
 	maxPromptBytes     = 32 << 10
 	maxAskStreamBytes  = 16 << 20
+	askWriteTimeout    = 15 * time.Second
 )
 
 type Asker interface {
@@ -66,6 +68,11 @@ func serveAsk(asker Asker) http.HandlerFunc {
 			writeJSONError(response, http.StatusInternalServerError, "streaming_unavailable", "response streaming is unavailable")
 			return
 		}
+		if err := setAskWriteDeadline(response); err != nil {
+			writeJSONError(response, http.StatusInternalServerError, "streaming_unavailable", "response streaming is unavailable")
+			return
+		}
+		defer clearAskWriteDeadline(response)
 
 		response.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		response.Header().Set("Cache-Control", "no-cache")
@@ -78,6 +85,10 @@ func serveAsk(asker Asker) http.HandlerFunc {
 		var streamBytes int64
 		err := asker.Ask(request.Context(), askRequest.Prompt, func(event agent.Event) error {
 			streamEvent := newAskEvent(event)
+			if err := setAskWriteDeadline(response); err != nil {
+				writeFailed = true
+				return err
+			}
 			if err := writeSSE(response, flusher, &streamBytes, streamEvent); err != nil {
 				writeFailed = true
 				return err
@@ -88,13 +99,37 @@ func serveAsk(asker Asker) http.HandlerFunc {
 			return nil
 		})
 		if err != nil && !completed && !writeFailed && request.Context().Err() == nil {
+			code := "agent_failed"
+			message := "the agent could not complete the request"
+			if errors.Is(err, context.DeadlineExceeded) {
+				code = "request_timeout"
+				message = "the agent request timed out"
+			}
+			if deadlineErr := setAskWriteDeadline(response); deadlineErr != nil {
+				return
+			}
 			_ = writeSSE(response, flusher, &streamBytes, AskEvent{
 				Type:    "error",
-				Code:    "agent_failed",
-				Message: "the agent could not complete the request",
+				Code:    code,
+				Message: message,
 			})
 		}
 	}
+}
+
+func setAskWriteDeadline(response http.ResponseWriter) error {
+	err := http.NewResponseController(response).SetWriteDeadline(time.Now().Add(askWriteTimeout))
+	if errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("set API stream write deadline: %w", err)
+	}
+	return nil
+}
+
+func clearAskWriteDeadline(response http.ResponseWriter) {
+	_ = http.NewResponseController(response).SetWriteDeadline(time.Time{})
 }
 
 func decodeAskRequest(response http.ResponseWriter, request *http.Request) (AskRequest, int, *APIError) {

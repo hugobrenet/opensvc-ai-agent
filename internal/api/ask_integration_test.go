@@ -43,7 +43,7 @@ func TestLiveAskStreamsClusterHealth(t *testing.T) {
 	}
 	orchestrator, err := agent.New(model, func(ctx context.Context) (agent.MCPSession, error) {
 		return mcpClient.Connect(ctx)
-	}, agent.Config{MaxIterations: agentConfig.MaxIterations})
+	}, agent.Config{MaxIterations: agentConfig.MaxIterations, Timeout: agentConfig.Timeout})
 	if err != nil {
 		t.Fatalf("create live agent: %v", err)
 	}

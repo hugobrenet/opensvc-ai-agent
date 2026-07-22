@@ -48,6 +48,7 @@ wire contract from `OPENSVC_AI_LLM_PROTOCOL` explicitly:
 | Variable | Description |
 | --- | --- |
 | `OPENSVC_AI_AGENT_MAX_ITERATIONS` | Maximum LLM turns per request, default `8`, maximum `32`. |
+| `OPENSVC_AI_AGENT_TIMEOUT` | End-to-end timeout for one ask, default `5m`, accepted range `1s` to `30m`. |
 
 ## MCP configuration
 
@@ -134,7 +135,10 @@ The stream can contain `text_delta`, `tool_started`, `tool_finished`, `usage`,
 and credentials are not exposed by this API. Authentication and request
 validation failures use JSON HTTP errors before streaming starts. Runtime
 failures use a generic terminal `error` SSE event because the HTTP 200 response
-has already started.
+has already started. The stable error code is `agent_failed`, or
+`request_timeout` when an operation deadline expires. Each SSE write must
+complete within 15 seconds so a client that stops reading cannot retain an ask
+indefinitely.
 
 ## Development
 

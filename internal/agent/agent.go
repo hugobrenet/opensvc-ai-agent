@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/auth"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/llm"
@@ -22,6 +23,7 @@ type MCPConnectFunc func(context.Context) (MCPSession, error)
 
 type Config struct {
 	MaxIterations int
+	Timeout       time.Duration
 }
 
 type Agent struct {
@@ -40,6 +42,9 @@ func New(llmClient llm.Client, connectMCP MCPConnectFunc, config Config) (*Agent
 	if config.MaxIterations <= 0 {
 		return nil, fmt.Errorf("agent max iterations must be positive")
 	}
+	if config.Timeout <= 0 {
+		return nil, fmt.Errorf("agent timeout must be positive")
+	}
 	return &Agent{llm: llmClient, connectMCP: connectMCP, config: config}, nil
 }
 
@@ -50,6 +55,8 @@ func (a *Agent) Ask(ctx context.Context, prompt string, emit EmitFunc) (err erro
 	if emit == nil {
 		return fmt.Errorf("agent event consumer is nil")
 	}
+	ctx, cancel := context.WithTimeout(ctx, a.config.Timeout)
+	defer cancel()
 
 	session, err := a.connectMCP(ctx)
 	if err != nil {
