@@ -23,7 +23,7 @@ persistent sessions, or om3 integration code only as an explicit project step.
 Implement the first incomplete step only unless the user explicitly expands the
 active project step:
 
-1. Provider-neutral conversation turn engine.
+1. Provider-neutral conversation turn engine. Complete.
    - Refactor the current one-shot loop behind an internal turn method accepting
      bounded provider-neutral history and returning the complete messages
      produced by the turn.
@@ -79,7 +79,7 @@ active project step:
    - Design `ox ai` and an optional authenticated OpenSVC daemon proxy without
      exposing the agent or MCP listener to the network.
 
-The next incomplete step is step 1. The OpenSVC JWT belongs only to the
+The next incomplete step is step 2. The OpenSVC JWT belongs only to the
 authenticated agent, MCP, and daemon path. It must never enter an LLM request,
 LLM context, persisted conversation, prompt, tool argument, provider
 configuration, or audit record.
@@ -104,6 +104,7 @@ internal/
     agent.go
     convert.go
     event.go
+    history.go
     prompt.go
   api/
     ask.go
@@ -156,8 +157,12 @@ configuration; constructs one shared JWT verifier, LLM client, MCP client, and
 Agent; then injects them into the API handler. `POST /v1/ask` never constructs
 provider clients. Its middleware authenticates the OpenSVC access JWT before
 reading the prompt or starting SSE, removes the inbound Authorization header,
-and retains the JWT only in private request context. `Agent.Ask` then opens and
-closes one request-scoped MCP session using the same JWT.
+and retains the JWT only in private request context. `Agent.Ask` wraps
+`Agent.RunTurn` with an empty history. `RunTurn` deep-copies and validates up to
+256 provider-neutral history messages and 2 MiB before opening and closing one
+request-scoped MCP session using the same JWT. It injects the current system
+prompt outside persisted history and returns only the complete new user,
+assistant, tool-call, and tool-result messages.
 
 `internal/agent` opens one request-scoped MCP session, exposes every discovered
 MCP tool to the model, and executes requested tools sequentially. Tool arguments

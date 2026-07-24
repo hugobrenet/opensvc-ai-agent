@@ -32,6 +32,14 @@ type Agent struct {
 	config     Config
 }
 
+// TurnResult contains the provider-neutral messages produced by one completed
+// user turn. It excludes the system prompt and the history supplied to
+// RunTurn.
+type TurnResult struct {
+	Messages     []llm.Message
+	FinishReason llm.FinishReason
+}
+
 func New(llmClient llm.Client, connectMCP MCPConnectFunc, config Config) (*Agent, error) {
 	if llmClient == nil {
 		return nil, fmt.Errorf("agent LLM client is nil")
@@ -49,18 +57,31 @@ func New(llmClient llm.Client, connectMCP MCPConnectFunc, config Config) (*Agent
 }
 
 func (a *Agent) Ask(ctx context.Context, prompt string, emit EmitFunc) (err error) {
+	_, err = a.RunTurn(ctx, nil, prompt, emit)
+	return err
+}
+
+// RunTurn executes one user turn after a complete provider-neutral history.
+// It returns only the new messages produced by the turn. A completed result may
+// accompany an MCP cleanup error, allowing a future conversation service to
+// distinguish completed model output from partial output.
+func (a *Agent) RunTurn(ctx context.Context, history []llm.Message, prompt string, emit EmitFunc) (result TurnResult, err error) {
 	if strings.TrimSpace(prompt) == "" {
-		return fmt.Errorf("agent prompt is empty")
+		return result, fmt.Errorf("agent prompt is empty")
 	}
 	if emit == nil {
-		return fmt.Errorf("agent event consumer is nil")
+		return result, fmt.Errorf("agent event consumer is nil")
+	}
+	history, err = prepareHistory(history)
+	if err != nil {
+		return result, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, a.config.Timeout)
 	defer cancel()
 
 	session, err := a.connectMCP(ctx)
 	if err != nil {
-		return fmt.Errorf("connect agent to MCP: %w", err)
+		return result, fmt.Errorf("connect agent to MCP: %w", err)
 	}
 	defer func() {
 		if closeErr := session.Close(); closeErr != nil {
@@ -70,16 +91,18 @@ func (a *Agent) Ask(ctx context.Context, prompt string, emit EmitFunc) (err erro
 
 	mcpTools, err := session.ListTools(ctx)
 	if err != nil {
-		return fmt.Errorf("list agent MCP tools: %w", err)
+		return result, fmt.Errorf("list agent MCP tools: %w", err)
 	}
 	tools, toolNames, err := convertTools(mcpTools)
 	if err != nil {
-		return err
+		return result, err
 	}
-	messages := []llm.Message{
-		{Role: llm.RoleSystem, Text: systemPrompt},
-		{Role: llm.RoleUser, Text: prompt},
-	}
+	userMessage := llm.Message{Role: llm.RoleUser, Text: prompt}
+	messages := make([]llm.Message, 0, len(history)+2)
+	messages = append(messages, llm.Message{Role: llm.RoleSystem, Text: systemPrompt})
+	messages = append(messages, history...)
+	messages = append(messages, userMessage)
+	turnMessages := []llm.Message{userMessage}
 	llmContext := auth.WithoutAuthentication(ctx)
 	totalToolCalls := 0
 
@@ -118,65 +141,71 @@ func (a *Agent) Ask(ctx context.Context, prompt string, emit EmitFunc) (err erro
 			}
 			return nil
 		}); err != nil {
-			return fmt.Errorf("run LLM iteration %d: %w", iteration, err)
+			return result, fmt.Errorf("run LLM iteration %d: %w", iteration, err)
 		}
 		if !completion {
-			return fmt.Errorf("LLM iteration %d ended without completion", iteration)
+			return result, fmt.Errorf("LLM iteration %d ended without completion", iteration)
 		}
 		if len(calls) == 0 {
 			if finish == llm.FinishReasonToolCalls {
-				return fmt.Errorf("LLM iteration %d completed for tool calls without a tool call", iteration)
+				return result, fmt.Errorf("LLM iteration %d completed for tool calls without a tool call", iteration)
 			}
 			if turnText.Len() == 0 {
-				return fmt.Errorf("LLM iteration %d completed without text or tool calls", iteration)
+				return result, fmt.Errorf("LLM iteration %d completed without text or tool calls", iteration)
 			}
-			return emitAgentEvent(emit, Event{Type: EventCompleted, FinishReason: finish, Iteration: iteration})
+			assistantMessage := llm.Message{Role: llm.RoleAssistant, Text: turnText.String()}
+			if err := emitAgentEvent(emit, Event{Type: EventCompleted, FinishReason: finish, Iteration: iteration}); err != nil {
+				return result, err
+			}
+			turnMessages = append(turnMessages, assistantMessage)
+			result = TurnResult{Messages: turnMessages, FinishReason: finish}
+			return result, nil
 		}
 		if finish != llm.FinishReasonToolCalls {
-			return fmt.Errorf("LLM iteration %d emitted tool calls with finish reason %q", iteration, finish)
+			return result, fmt.Errorf("LLM iteration %d emitted tool calls with finish reason %q", iteration, finish)
 		}
 		if len(calls) > maxToolCallsPerTurn {
-			return fmt.Errorf("LLM iteration %d requested %d tools, maximum is %d", iteration, len(calls), maxToolCallsPerTurn)
+			return result, fmt.Errorf("LLM iteration %d requested %d tools, maximum is %d", iteration, len(calls), maxToolCallsPerTurn)
 		}
 		if totalToolCalls+len(calls) > maxToolCallsPerAsk {
-			return fmt.Errorf("agent tool call count would exceed maximum of %d", maxToolCallsPerAsk)
+			return result, fmt.Errorf("agent tool call count would exceed maximum of %d", maxToolCallsPerAsk)
 		}
 		if iteration == a.config.MaxIterations {
-			return fmt.Errorf("agent reached maximum of %d iterations before a final answer", a.config.MaxIterations)
+			return result, fmt.Errorf("agent reached maximum of %d iterations before a final answer", a.config.MaxIterations)
 		}
 
 		results := make([]llm.ToolResult, 0, len(calls))
 		totalToolCalls += len(calls)
 		for _, call := range calls {
 			if _, ok := toolNames[call.Name]; !ok {
-				return fmt.Errorf("LLM requested unknown MCP tool %q", call.Name)
+				return result, fmt.Errorf("LLM requested unknown MCP tool %q", call.Name)
 			}
 			arguments, err := decodeToolArguments(call)
 			if err != nil {
-				return err
+				return result, err
 			}
 			if err := emitAgentEvent(emit, Event{Type: EventToolStarted, ToolName: call.Name, Iteration: iteration}); err != nil {
-				return err
+				return result, err
 			}
-			result, err := session.CallTool(ctx, call.Name, arguments)
+			toolResult, err := session.CallTool(ctx, call.Name, arguments)
 			if err != nil {
-				return fmt.Errorf("call agent MCP tool %q: %w", call.Name, err)
+				return result, fmt.Errorf("call agent MCP tool %q: %w", call.Name, err)
 			}
-			content, err := encodeToolResult(result)
+			content, err := encodeToolResult(toolResult)
 			if err != nil {
-				return fmt.Errorf("process agent MCP tool %q result: %w", call.Name, err)
+				return result, fmt.Errorf("process agent MCP tool %q result: %w", call.Name, err)
 			}
-			if err := emitAgentEvent(emit, Event{Type: EventToolFinished, ToolName: call.Name, ToolError: result.IsError, Iteration: iteration}); err != nil {
-				return err
+			if err := emitAgentEvent(emit, Event{Type: EventToolFinished, ToolName: call.Name, ToolError: toolResult.IsError, Iteration: iteration}); err != nil {
+				return result, err
 			}
-			results = append(results, llm.ToolResult{CallID: call.ID, Content: content, IsError: result.IsError})
+			results = append(results, llm.ToolResult{CallID: call.ID, Content: content, IsError: toolResult.IsError})
 		}
-		messages = append(messages,
-			llm.Message{Role: llm.RoleAssistant, Text: turnText.String(), ToolCalls: calls},
-			llm.Message{Role: llm.RoleTool, ToolResults: results},
-		)
+		assistantMessage := llm.Message{Role: llm.RoleAssistant, Text: turnText.String(), ToolCalls: calls}
+		toolMessage := llm.Message{Role: llm.RoleTool, ToolResults: results}
+		messages = append(messages, assistantMessage, toolMessage)
+		turnMessages = append(turnMessages, assistantMessage, toolMessage)
 	}
-	return fmt.Errorf("agent reached maximum of %d iterations", a.config.MaxIterations)
+	return result, fmt.Errorf("agent reached maximum of %d iterations", a.config.MaxIterations)
 }
 
 func emitAgentEvent(emit EmitFunc, event Event) error {
