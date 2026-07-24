@@ -54,7 +54,7 @@ func TestStorePersistsConversationAndToolHistory(t *testing.T) {
 		t.Fatalf("BeginTurn() = %#v", turn)
 	}
 	messages := toolTranscript()
-	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn.ID, testNow.Add(2*time.Second), messages); err != nil {
+	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn.ID, testNow.Add(2*time.Second), testNow.Add(time.Hour), messages); err != nil {
 		t.Fatalf("CompleteTurn() error: %v", err)
 	}
 	history, err := store.LoadHistory(t.Context(), testOwner, item.ID)
@@ -65,7 +65,7 @@ func TestStorePersistsConversationAndToolHistory(t *testing.T) {
 		t.Fatalf("LoadHistory() = %#v, want %#v", history, messages)
 	}
 	got, err = store.GetConversation(t.Context(), testOwner, item.ID)
-	if err != nil || got.StoredBytes <= 0 || !got.UpdatedAt.Equal(testNow.Add(2*time.Second)) {
+	if err != nil || got.StoredBytes <= 0 || !got.UpdatedAt.Equal(testNow.Add(2*time.Second)) || !got.ExpiresAt.Equal(testNow.Add(time.Hour)) {
 		t.Fatalf("completed conversation = %#v, %v", got, err)
 	}
 	var journalMode string
@@ -171,6 +171,33 @@ func TestStoreSerializesTurnsAndRecoversInterrupted(t *testing.T) {
 	}
 }
 
+func TestStoreDoesNotDeleteConversationWithRunningTurn(t *testing.T) {
+	store, _ := openTestStore(t, Config{})
+	item := testConversation("conversation-1", testOwner, testNow)
+	item.ExpiresAt = testNow.Add(time.Minute)
+	if err := store.CreateConversation(t.Context(), item); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.BeginTurn(t.Context(), testOwner, item.ID, "turn-1", testNow.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteConversation(t.Context(), testOwner, item.ID); !errors.Is(err, conversation.ErrBusy) {
+		t.Fatalf("delete running conversation error=%v", err)
+	}
+	deleted, err := store.DeleteExpired(t.Context(), testNow.Add(2*time.Minute), 10)
+	if err != nil || deleted != 0 {
+		t.Fatalf("DeleteExpired()=%d, %v", deleted, err)
+	}
+	if err := store.FailTurn(t.Context(), testOwner, item.ID, turn.ID, conversation.TurnCanceled, "request_canceled", testNow.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err = store.DeleteExpired(t.Context(), testNow.Add(2*time.Minute), 10)
+	if err != nil || deleted != 1 {
+		t.Fatalf("DeleteExpired() after turn=%d, %v", deleted, err)
+	}
+}
+
 func TestStoreEnforcesLimitsWithoutPartialHistory(t *testing.T) {
 	store, _ := openTestStore(t, Config{MaxConversations: 1, MaxTurns: 2, MaxMessages: 2})
 	item := testConversation("conversation-1", testOwner, testNow)
@@ -185,7 +212,7 @@ func TestStoreEnforcesLimitsWithoutPartialHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := []llm.Message{{Role: llm.RoleUser, Text: "health"}, {Role: llm.RoleAssistant, Text: "healthy"}}
-	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn1.ID, testNow.Add(2*time.Second), first); err != nil {
+	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn1.ID, testNow.Add(2*time.Second), testNow.Add(time.Hour), first); err != nil {
 		t.Fatal(err)
 	}
 	turn2, err := store.BeginTurn(t.Context(), testOwner, item.ID, "turn-2", testNow.Add(3*time.Second))
@@ -193,7 +220,7 @@ func TestStoreEnforcesLimitsWithoutPartialHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := []llm.Message{{Role: llm.RoleUser, Text: "redis"}, {Role: llm.RoleAssistant, Text: "up"}}
-	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn2.ID, testNow.Add(4*time.Second), second); !errors.Is(err, conversation.ErrLimit) {
+	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn2.ID, testNow.Add(4*time.Second), testNow.Add(time.Hour), second); !errors.Is(err, conversation.ErrLimit) {
 		t.Fatalf("message limit error = %v", err)
 	}
 	history, err := store.LoadHistory(t.Context(), testOwner, item.ID)
@@ -219,14 +246,14 @@ func TestStoreRejectsInvalidAndOversizedCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	invalid := []llm.Message{{Role: llm.RoleSystem, Text: "do not store"}}
-	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn.ID, testNow.Add(2*time.Second), invalid); !errors.Is(err, conversation.ErrInvalid) {
+	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn.ID, testNow.Add(2*time.Second), testNow.Add(time.Hour), invalid); !errors.Is(err, conversation.ErrInvalid) {
 		t.Fatalf("invalid completion error = %v", err)
 	}
 	oversized := []llm.Message{
 		{Role: llm.RoleUser, Text: strings.Repeat("x", 100)},
 		{Role: llm.RoleAssistant, Text: strings.Repeat("y", 100)},
 	}
-	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn.ID, testNow.Add(2*time.Second), oversized); !errors.Is(err, conversation.ErrLimit) {
+	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn.ID, testNow.Add(2*time.Second), testNow.Add(time.Hour), oversized); !errors.Is(err, conversation.ErrLimit) {
 		t.Fatalf("oversized completion error = %v", err)
 	}
 	if history, err := store.LoadHistory(t.Context(), testOwner, item.ID); err != nil || len(history) != 0 {
@@ -325,7 +352,7 @@ func TestLoadHistoryRejectsCorruptRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn.ID, testNow.Add(2*time.Second), []llm.Message{
+	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn.ID, testNow.Add(2*time.Second), testNow.Add(time.Hour), []llm.Message{
 		{Role: llm.RoleUser, Text: "health"},
 		{Role: llm.RoleAssistant, Text: "healthy"},
 	}); err != nil {

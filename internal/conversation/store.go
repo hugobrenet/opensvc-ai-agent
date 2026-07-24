@@ -11,6 +11,7 @@ import (
 var (
 	ErrNotFound = errors.New("conversation not found")
 	ErrBusy     = errors.New("conversation has a running turn")
+	ErrExpired  = errors.New("conversation expired")
 	ErrConflict = errors.New("conversation store conflict")
 	ErrLimit    = errors.New("conversation store limit exceeded")
 	ErrInvalid  = errors.New("invalid conversation store input")
@@ -23,7 +24,7 @@ type Store interface {
 	DeleteConversation(context.Context, Owner, string) error
 
 	BeginTurn(context.Context, Owner, string, string, time.Time) (Turn, error)
-	CompleteTurn(context.Context, Owner, string, string, time.Time, []llm.Message) error
+	CompleteTurn(context.Context, Owner, string, string, time.Time, time.Time, []llm.Message) error
 	FailTurn(context.Context, Owner, string, string, TurnStatus, string, time.Time) error
 	LoadHistory(context.Context, Owner, string) ([]llm.Message, error)
 

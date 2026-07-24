@@ -105,7 +105,22 @@ func (s *Store) DeleteConversation(ctx context.Context, owner conversation.Owner
 	if err := validateOwnerAndID(owner, id); err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, "DELETE FROM conversations WHERE id = ? AND issuer = ? AND subject = ?", id, owner.Issuer, owner.Subject)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete conversation transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := requireConversation(ctx, tx, owner, id); err != nil {
+		return err
+	}
+	var running int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM turns WHERE conversation_id = ? AND status = 'running'", id).Scan(&running); err != nil {
+		return fmt.Errorf("inspect conversation before deletion: %w", err)
+	}
+	if running != 0 {
+		return conversation.ErrBusy
+	}
+	result, err := tx.ExecContext(ctx, "DELETE FROM conversations WHERE id = ? AND issuer = ? AND subject = ?", id, owner.Issuer, owner.Subject)
 	if err != nil {
 		return fmt.Errorf("delete conversation: %w", err)
 	}
@@ -113,6 +128,9 @@ func (s *Store) DeleteConversation(ctx context.Context, owner conversation.Owner
 		return fmt.Errorf("count deleted conversations: %w", err)
 	} else if affected == 0 {
 		return conversation.ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete conversation: %w", err)
 	}
 	return nil
 }
@@ -171,7 +189,7 @@ VALUES (?, ?, ?, 'running', '', ?, NULL)`, turn.ID, turn.ConversationID, turn.Se
 	return turn, nil
 }
 
-func (s *Store) CompleteTurn(ctx context.Context, owner conversation.Owner, conversationID string, turnID string, completedAt time.Time, messages []llm.Message) error {
+func (s *Store) CompleteTurn(ctx context.Context, owner conversation.Owner, conversationID string, turnID string, completedAt time.Time, expiresAt time.Time, messages []llm.Message) error {
 	if err := validateOwnerAndID(owner, conversationID); err != nil {
 		return err
 	}
@@ -180,6 +198,9 @@ func (s *Store) CompleteTurn(ctx context.Context, owner conversation.Owner, conv
 	}
 	if completedAt.IsZero() {
 		return fmt.Errorf("%w: turn completion time is zero", conversation.ErrInvalid)
+	}
+	if !expiresAt.After(completedAt) {
+		return fmt.Errorf("%w: conversation expiry must follow turn completion", conversation.ErrInvalid)
 	}
 	encoded, addedBytes, err := encodeMessages(messages)
 	if err != nil {
@@ -242,8 +263,8 @@ WHERE id = ? AND conversation_id = ? AND status = 'running'`, toUnixNano(complet
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE conversations
-SET stored_bytes = stored_bytes + ?, updated_at = ?
-WHERE id = ?`, addedBytes, toUnixNano(completedAt), conversationID); err != nil {
+SET stored_bytes = stored_bytes + ?, updated_at = ?, expires_at = ?
+WHERE id = ?`, addedBytes, toUnixNano(completedAt), toUnixNano(expiresAt), conversationID); err != nil {
 		return fmt.Errorf("update completed conversation: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -414,6 +435,10 @@ DELETE FROM conversations
 WHERE id IN (
     SELECT id FROM conversations
     WHERE expires_at <= ?
+	  AND NOT EXISTS (
+	      SELECT 1 FROM turns
+	      WHERE turns.conversation_id = conversations.id AND turns.status = 'running'
+	  )
     ORDER BY expires_at, id
     LIMIT ?
 )`, toUnixNano(at), limit)
