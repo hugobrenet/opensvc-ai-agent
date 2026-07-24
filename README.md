@@ -16,9 +16,10 @@ messages, tools, tool calls, tool results, streaming events, and token usage. A
 Responses and Chat Completions protocol adapters implement streamed text and
 function calls using the Go standard library. The agent loop discovers MCP
 tools, lets the LLM select them, executes calls, returns results to the LLM,
-and repeats until a final answer. An authenticated one-shot ask API exposes the
-agent event stream over SSE. Persistent sessions and om3 integration are not
-implemented yet.
+and repeats until a final answer. Authenticated one-shot and persistent
+conversation APIs expose the agent event stream over SSE. Conversations are
+stored locally in SQLite and isolated by the verified OpenSVC issuer and
+subject. Interactive om3 integration is not implemented yet.
 
 The API emits structured JSON operational audit records to stdout. Every HTTP
 request receives a server-generated `X-Request-ID` for correlation.
@@ -60,6 +61,18 @@ wire contract from `OPENSVC_AI_LLM_PROTOCOL` explicitly:
 | --- | --- |
 | `OPENSVC_AI_AGENT_MAX_ITERATIONS` | Maximum LLM turns per request, default `8`, maximum `32`. |
 | `OPENSVC_AI_AGENT_TIMEOUT` | End-to-end timeout for one ask, default `5m`, accepted range `1s` to `30m`. |
+
+## Conversation configuration
+
+| Variable | Description |
+| --- | --- |
+| `OPENSVC_AI_CONVERSATION_DB_PATH` | Local SQLite path, default `/var/lib/opensvc-ai-agent/conversations.db`. |
+| `OPENSVC_AI_CONVERSATION_LIFETIME` | Retention after the last successful turn, default `168h`, accepted range `1h` to `8760h`. |
+
+The database directory and file must not grant access to group or other users.
+SQLite is an internal implementation detail and is never exposed through HTTP.
+Only provider-neutral completed messages are stored; credentials, JWTs, system
+prompts, grants, audit records, and partial model output are never persisted.
 
 ## MCP configuration
 
@@ -172,6 +185,19 @@ complete within 15 seconds so a client that stops reading cannot retain an ask
 indefinitely. When four asks are already running by default, a new request is
 rejected before SSE with HTTP `429`, error code `too_many_requests`, and a
 `Retry-After` header.
+
+## Conversations
+
+Create and list owned conversations with `POST /v1/conversations` and
+`GET /v1/conversations`. Read or delete one with
+`GET /v1/conversations/{id}` and `DELETE /v1/conversations/{id}`. Send a turn
+with `POST /v1/conversations/{id}/turns` and the same JSON prompt body and SSE
+event contract as `/v1/ask`.
+
+Only the JWT identity that created a conversation can access it. A second turn
+on the same conversation is rejected with `conversation_busy`. Successful
+turns extend the configured expiry; failed, canceled, and interrupted turns do
+not enter future model context.
 
 ## Operational audit
 

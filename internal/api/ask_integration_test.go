@@ -16,6 +16,7 @@ import (
 	"github.com/hugobrenet/opensvc-ai-agent/internal/api"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/auth"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/config"
+	"github.com/hugobrenet/opensvc-ai-agent/internal/conversation"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/llmfactory"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/mcpclient"
 )
@@ -53,7 +54,7 @@ func TestLiveAskStreamsClusterHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create live JWT verifier: %v", err)
 	}
-	handler, err := api.NewHandler(orchestrator, verifier, api.HandlerConfig{
+	handler, err := api.NewHandler(orchestrator, integrationConversationService{}, verifier, api.HandlerConfig{
 		MaxConcurrentAsks: 4,
 		AuditLogger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -90,4 +91,22 @@ func TestLiveAskStreamsClusterHealth(t *testing.T) {
 	if strings.Contains(body, mcpJWT) {
 		t.Fatal("live ask stream exposes delegated JWT")
 	}
+}
+
+type integrationConversationService struct{}
+
+func (integrationConversationService) Create(context.Context, auth.Identity) (conversation.Conversation, error) {
+	return conversation.Conversation{}, nil
+}
+func (integrationConversationService) Get(context.Context, auth.Identity, string) (conversation.Conversation, error) {
+	return conversation.Conversation{}, conversation.ErrNotFound
+}
+func (integrationConversationService) List(context.Context, auth.Identity) ([]conversation.Conversation, error) {
+	return nil, nil
+}
+func (integrationConversationService) Delete(context.Context, auth.Identity, string) error {
+	return conversation.ErrNotFound
+}
+func (integrationConversationService) PrepareTurn(context.Context, auth.Identity, string, string) (conversation.TurnExecution, error) {
+	return nil, conversation.ErrNotFound
 }

@@ -16,6 +16,7 @@ const (
 	requestIDHeader       = "X-Request-ID"
 	requestIDBytes        = 16
 	maxAuditIdentityRunes = 256
+	maxAuditIDRunes       = 128
 )
 
 type requestIDContextKey struct{}
@@ -66,6 +67,14 @@ func (a auditLogger) event(ctx context.Context, event string, attributes ...slog
 }
 
 func boundedAuditIdentity(value string) string {
+	return boundedAuditText(value, maxAuditIdentityRunes)
+}
+
+func boundedAuditID(value string) string {
+	return boundedAuditText(value, maxAuditIDRunes)
+}
+
+func boundedAuditText(value string, maximum int) string {
 	value = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
 			return ' '
@@ -74,8 +83,8 @@ func boundedAuditIdentity(value string) string {
 	}, value)
 	value = strings.Join(strings.Fields(value), " ")
 	runes := []rune(value)
-	if len(runes) <= maxAuditIdentityRunes {
+	if len(runes) <= maximum {
 		return value
 	}
-	return string(runes[:maxAuditIdentityRunes]) + "…"
+	return string(runes[:maximum]) + "…"
 }

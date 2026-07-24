@@ -16,9 +16,9 @@ The current implementation exposes an HTTP health endpoint, an authenticated
 MCP client, provider-neutral LLM contracts, Responses and Chat Completions
 protocol adapters, an agent loop coordinating LLM turns with MCP tool calls,
 an authenticated one-shot SSE ask API, a provider-neutral conversation turn
-engine, and a local SQLite conversation store not yet wired to the API. Add
-other protocol adapters or om3 integration code only as an explicit project
-step.
+engine, a local SQLite conversation store, a conversation service, and an
+authenticated persistent conversation API. Add other protocol adapters or om3
+integration code only as an explicit project step.
 
 ## Build order
 
@@ -40,14 +40,14 @@ active project step:
      permissions, retention, size limits, and interrupted-turn recovery.
    - Never persist JWTs, authorization headers, provider credentials, grants,
      system prompts, or raw audit data.
-3. Conversation service.
+3. Conversation service. Complete.
    - Bind every conversation to the authenticated OpenSVC issuer and subject.
    - Serialize turns per conversation without holding a database transaction
      during LLM or MCP work.
    - Commit only completed messages to future model context; record failed,
      canceled, and interrupted turns without replaying partial output.
    - Enforce bounded history, turn count, stored bytes, expiry, and deletion.
-4. Authenticated conversation API.
+4. Authenticated conversation API. Complete.
    - Add `POST /v1/conversations`, `GET /v1/conversations`,
      `GET /v1/conversations/{id}`, and
      `DELETE /v1/conversations/{id}`.
@@ -81,7 +81,7 @@ active project step:
    - Design `ox ai` and an optional authenticated OpenSVC daemon proxy without
      exposing the agent or MCP listener to the network.
 
-The next incomplete step is step 3. The OpenSVC JWT belongs only to the
+The next incomplete step is step 5. The OpenSVC JWT belongs only to the
 authenticated agent, MCP, and daemon path. It must never enter an LLM request,
 LLM context, persisted conversation, prompt, tool argument, provider
 configuration, or audit record.
@@ -113,6 +113,7 @@ internal/
     ask.go
     ask_test.go
     auth_middleware.go
+    conversations.go
     server.go
     server_test.go
   auth/
@@ -122,12 +123,14 @@ internal/
     jwt_test.go
   config/
     agent.go
+    conversation.go
     config.go
     config_test.go
     jwt.go
     mcp.go
   conversation/
     model.go
+    service.go
     store.go
     sqlite/
       codec.go
@@ -181,15 +184,25 @@ request-scoped MCP session using the same JWT. It injects the current system
 prompt outside persisted history and returns only the complete new user,
 assistant, tool-call, and tool-result messages.
 
-The SQLite conversation store is local to one node and is not constructed by
-the composition root until the conversation service exists. It uses embedded
+The SQLite conversation store is local to one node and is constructed once by
+the composition root. It uses embedded
 migrations, WAL with full synchronous writes, foreign keys, secure deletion,
 owner-filtered operations, atomic turn completion, and strict provider-neutral
 message encoding. It permits one writer connection, stores no partial model
 output, marks abandoned running turns interrupted on explicit recovery, and
 enforces logical conversation and database limits. The database directory and
-file must deny group and other access. JWTs, provider credentials, system
-prompts, grants, authorization headers, and audit records never enter it.
+file must deny group and other access. On startup, running turns left by a
+crash are marked interrupted and expired conversations are deleted. JWTs,
+provider credentials, system prompts, grants, authorization headers, and audit
+records never enter it.
+
+The conversation service binds every operation to the verified issuer and
+subject. It reserves one running turn atomically, loads a bounded suffix of
+completed history, and releases all database transactions before calling the
+LLM or MCP. Failed and canceled turns store only a stable status and code.
+Successful messages are committed atomically before the terminal `completed`
+event is emitted. Conversation expiry is extended only by successful turns;
+expired cleanup never deletes a conversation with a running turn.
 
 `internal/agent` opens one request-scoped MCP session, exposes every discovered
 MCP tool to the model, and executes requested tools sequentially. Tool arguments
@@ -266,6 +279,12 @@ protocol name, never by provider or model name.
   write to complete within 15 seconds.
 - Reject asks above the configured process-wide concurrency limit before SSE
   with HTTP 429, the stable `too_many_requests` code, and `Retry-After`.
+- Authenticate all `/v1/conversations` operations with the same OpenSVC access
+  JWT middleware. Expose only conversation metadata and agent SSE events, never
+  stored rows, SQL operations, prompts, messages, tool arguments, or results.
+- Return `conversation_not_found` for missing and foreign-owner identifiers,
+  `conversation_expired` for an owned expired conversation, and
+  `conversation_busy` when a turn is already active.
 - On SIGINT or SIGTERM, stop accepting requests, drain active asks for the
   configured shutdown timeout, then close remaining connections so request
   cancellation propagates to LLM and MCP calls.

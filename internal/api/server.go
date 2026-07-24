@@ -18,12 +18,15 @@ type HandlerConfig struct {
 	AuditLogger       *slog.Logger
 }
 
-func NewHandler(asker Asker, verifier auth.TokenVerifier, config HandlerConfig) (http.Handler, error) {
+func NewHandler(asker Asker, conversations ConversationService, verifier auth.TokenVerifier, config HandlerConfig) (http.Handler, error) {
 	if asker == nil {
 		return nil, fmt.Errorf("API agent is nil")
 	}
 	if verifier == nil {
 		return nil, fmt.Errorf("API token verifier is nil")
+	}
+	if conversations == nil {
+		return nil, fmt.Errorf("API conversation service is nil")
 	}
 	if config.MaxConcurrentAsks <= 0 {
 		return nil, fmt.Errorf("API max concurrent asks must be positive")
@@ -36,6 +39,11 @@ func NewHandler(asker Asker, verifier auth.TokenVerifier, config HandlerConfig) 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", getHealth)
 	mux.Handle("POST /v1/ask", requireAccessToken(verifier, audit, serveAsk(asker, limiter, audit)))
+	mux.Handle("POST /v1/conversations", requireAccessToken(verifier, audit, serveCreateConversation(conversations, audit)))
+	mux.Handle("GET /v1/conversations", requireAccessToken(verifier, audit, serveListConversations(conversations, audit)))
+	mux.Handle("GET /v1/conversations/{id}", requireAccessToken(verifier, audit, serveGetConversation(conversations, audit)))
+	mux.Handle("DELETE /v1/conversations/{id}", requireAccessToken(verifier, audit, serveDeleteConversation(conversations, audit)))
+	mux.Handle("POST /v1/conversations/{id}/turns", requireAccessToken(verifier, audit, serveConversationTurn(conversations, limiter, audit)))
 	return withRequestID(mux), nil
 }
 

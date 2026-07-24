@@ -199,7 +199,7 @@ func TestBoundedAuditIdentityNormalizesAndTruncates(t *testing.T) {
 func newAuditTestHandler(t *testing.T, output *bytes.Buffer, asker Asker, verifier auth.TokenVerifier) http.Handler {
 	t.Helper()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	handler, err := NewHandler(asker, verifier, HandlerConfig{MaxConcurrentAsks: 4, AuditLogger: logger})
+	handler, err := NewHandler(asker, noopConversationService{}, verifier, HandlerConfig{MaxConcurrentAsks: 4, AuditLogger: logger})
 	if err != nil {
 		t.Fatalf("create audited API handler: %v", err)
 	}

@@ -17,6 +17,8 @@ import (
 	"github.com/hugobrenet/opensvc-ai-agent/internal/api"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/auth"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/config"
+	"github.com/hugobrenet/opensvc-ai-agent/internal/conversation"
+	conversationsqlite "github.com/hugobrenet/opensvc-ai-agent/internal/conversation/sqlite"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/llmfactory"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/mcpclient"
 )
@@ -35,6 +37,10 @@ func main() {
 	agentConfig, err := config.LoadAgent()
 	if err != nil {
 		log.Fatalf("load agent configuration: %v", err)
+	}
+	conversationConfig, err := config.LoadConversation()
+	if err != nil {
+		log.Fatalf("load conversation configuration: %v", err)
 	}
 	mcpConfig, err := config.LoadMCP()
 	if err != nil {
@@ -60,18 +66,50 @@ func main() {
 	if err != nil {
 		log.Fatalf("create agent: %v", err)
 	}
+	startupContext, cancelStartup := context.WithTimeout(context.Background(), 30*time.Second)
+	conversationStore, err := conversationsqlite.Open(startupContext, conversationsqlite.Config{Path: conversationConfig.DatabasePath})
+	if err != nil {
+		cancelStartup()
+		log.Fatalf("open conversation store: %v", err)
+	}
+	conversationService, err := conversation.NewService(conversationStore, orchestrator, conversation.ServiceConfig{Lifetime: conversationConfig.Lifetime})
+	if err != nil {
+		cancelStartup()
+		_ = conversationStore.Close()
+		log.Fatalf("create conversation service: %v", err)
+	}
+	if recovered, recoverErr := conversationService.Recover(startupContext); recoverErr != nil {
+		cancelStartup()
+		_ = conversationStore.Close()
+		log.Fatalf("recover interrupted conversation turns: %v", recoverErr)
+	} else if recovered != 0 {
+		log.Printf("recovered %d interrupted conversation turns", recovered)
+	}
+	if _, err := conversationService.DeleteExpired(startupContext); err != nil {
+		cancelStartup()
+		_ = conversationStore.Close()
+		log.Fatalf("delete expired conversations: %v", err)
+	}
+	cancelStartup()
+	defer func() {
+		if err := conversationStore.Close(); err != nil {
+			log.Printf("close conversation store: %v", err)
+		}
+	}()
 	auditLogger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	handler, err := api.NewHandler(orchestrator, verifier, api.HandlerConfig{
+	handler, err := api.NewHandler(orchestrator, conversationService, verifier, api.HandlerConfig{
 		MaxConcurrentAsks: processConfig.MaxConcurrentAsks,
 		AuditLogger:       auditLogger,
 	})
 	if err != nil {
+		_ = conversationStore.Close()
 		log.Fatalf("create HTTP API: %v", err)
 	}
 
 	server := newHTTPServer(processConfig.ListenAddress, handler)
 	listener, err := net.Listen("tcp", processConfig.ListenAddress)
 	if err != nil {
+		_ = conversationStore.Close()
 		log.Fatalf("listen for HTTP API: %v", err)
 	}
 	serveErrors := make(chan error, 1)
@@ -85,7 +123,8 @@ func main() {
 	select {
 	case err := <-serveErrors:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("serve HTTP API: %v", err)
+			log.Printf("serve HTTP API: %v", err)
+			return
 		}
 	case <-signalContext.Done():
 		stopSignals()

@@ -69,158 +69,179 @@ func serveAsk(asker Asker, limiter *askLimiter, audit auditLogger) http.HandlerF
 			writeJSONError(response, status, apiError.Code, apiError.Message)
 			return
 		}
-		if !limiter.tryAcquire() {
-			audit.event(request.Context(), "ask_rejected",
-				slog.Int("status", http.StatusTooManyRequests),
-				slog.String("code", "too_many_requests"),
-			)
-			response.Header().Set("Retry-After", "1")
-			writeJSONError(response, http.StatusTooManyRequests, "too_many_requests", "too many agent requests are already running")
+		if !acquireAgentSlot(response, request, limiter, audit, "ask", nil) {
 			return
 		}
 		defer limiter.release()
-		flusher, ok := response.(http.Flusher)
-		if !ok {
-			audit.event(request.Context(), "ask_rejected",
-				slog.Int("status", http.StatusInternalServerError),
-				slog.String("code", "streaming_unavailable"),
-			)
-			writeJSONError(response, http.StatusInternalServerError, "streaming_unavailable", "response streaming is unavailable")
-			return
-		}
-		if err := setAskWriteDeadline(response); err != nil {
-			audit.event(request.Context(), "ask_rejected",
-				slog.Int("status", http.StatusInternalServerError),
-				slog.String("code", "streaming_unavailable"),
-			)
-			writeJSONError(response, http.StatusInternalServerError, "streaming_unavailable", "response streaming is unavailable")
-			return
-		}
-		defer clearAskWriteDeadline(response)
-
-		response.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-		response.Header().Set("Cache-Control", "no-cache")
-		response.Header().Set("X-Content-Type-Options", "nosniff")
-		response.WriteHeader(http.StatusOK)
-		flusher.Flush()
-		startedAt := time.Now()
-		audit.event(request.Context(), "ask_started", slog.Int("status", http.StatusOK))
-
-		writeFailed := false
-		completed := false
-		finishReason := ""
-		lastIteration := 0
-		toolCalls := 0
-		var usage AskUsage
-		var activeToolName string
-		var activeToolStartedAt time.Time
-		var streamBytes int64
-		recordEvent := func(event agent.Event) {
-			switch event.Type {
-			case agent.EventToolStarted:
-				toolCalls++
-				activeToolName = event.ToolName
-				activeToolStartedAt = time.Now()
-				audit.event(request.Context(), "tool_started",
-					slog.String("tool_name", event.ToolName),
-					slog.Int("iteration", event.Iteration),
-				)
-			case agent.EventToolFinished:
-				duration := int64(0)
-				if activeToolName == event.ToolName && !activeToolStartedAt.IsZero() {
-					duration = time.Since(activeToolStartedAt).Milliseconds()
-				}
-				attributes := []slog.Attr{
-					slog.String("tool_name", event.ToolName),
-					slog.Int("iteration", event.Iteration),
-					slog.Bool("tool_error", event.ToolError),
-					slog.Int64("duration_ms", duration),
-				}
-				if event.ToolError {
-					attributes = append(attributes, slog.String("code", "tool_error"))
-				}
-				audit.event(request.Context(), "tool_finished", attributes...)
-				activeToolName = ""
-				activeToolStartedAt = time.Time{}
-			case agent.EventUsage:
-				usage.InputTokens = saturatingAdd(usage.InputTokens, event.Usage.InputTokens)
-				usage.OutputTokens = saturatingAdd(usage.OutputTokens, event.Usage.OutputTokens)
-				usage.TotalTokens = saturatingAdd(usage.TotalTokens, event.Usage.TotalTokens)
-				audit.event(request.Context(), "llm_usage",
-					slog.Int("iteration", event.Iteration),
-					slog.Int64("input_tokens", event.Usage.InputTokens),
-					slog.Int64("output_tokens", event.Usage.OutputTokens),
-					slog.Int64("total_tokens", event.Usage.TotalTokens),
-				)
-			case agent.EventCompleted:
-				completed = true
-				finishReason = string(event.FinishReason)
-			}
-		}
-		err := asker.Ask(request.Context(), askRequest.Prompt, func(event agent.Event) error {
-			lastIteration = max(lastIteration, event.Iteration)
-			if event.Type != agent.EventToolStarted {
-				recordEvent(event)
-			}
-			streamEvent := newAskEvent(event)
-			if err := setAskWriteDeadline(response); err != nil {
-				writeFailed = true
-				return err
-			}
-			if err := writeSSE(response, flusher, &streamBytes, streamEvent); err != nil {
-				writeFailed = true
-				return err
-			}
-			if event.Type == agent.EventToolStarted {
-				recordEvent(event)
-			}
-			return nil
+		streamAgent(response, request, audit, "ask", nil, func(emit agent.EmitFunc) error {
+			return asker.Ask(request.Context(), askRequest.Prompt, emit)
 		})
-		failureCode := askFailureCode(err, completed, writeFailed, request.Context().Err())
-		if activeToolName != "" && failureCode == "" {
-			failureCode = "agent_incomplete"
-		}
-		if activeToolName != "" {
-			audit.event(request.Context(), "tool_finished",
-				slog.String("tool_name", activeToolName),
-				slog.Int("iteration", lastIteration),
-				slog.Bool("tool_error", true),
-				slog.Int64("duration_ms", time.Since(activeToolStartedAt).Milliseconds()),
-				slog.String("code", failureCode),
+	}
+}
+
+func acquireAgentSlot(response http.ResponseWriter, request *http.Request, limiter *askLimiter, audit auditLogger, prefix string, attributes []slog.Attr) bool {
+	if limiter.tryAcquire() {
+		return true
+	}
+	attributes = append(append([]slog.Attr(nil), attributes...),
+		slog.Int("status", http.StatusTooManyRequests),
+		slog.String("code", "too_many_requests"),
+	)
+	audit.event(request.Context(), prefix+"_rejected", attributes...)
+	response.Header().Set("Retry-After", "1")
+	writeJSONError(response, http.StatusTooManyRequests, "too_many_requests", "too many agent requests are already running")
+	return false
+}
+
+func streamAgent(response http.ResponseWriter, request *http.Request, audit auditLogger, prefix string, baseAttributes []slog.Attr, run func(agent.EmitFunc) error) bool {
+	flusher, ok := response.(http.Flusher)
+	if !ok {
+		audit.event(request.Context(), prefix+"_rejected", appendAttributes(baseAttributes,
+			slog.Int("status", http.StatusInternalServerError),
+			slog.String("code", "streaming_unavailable"),
+		)...)
+		writeJSONError(response, http.StatusInternalServerError, "streaming_unavailable", "response streaming is unavailable")
+		return false
+	}
+	if err := setAskWriteDeadline(response); err != nil {
+		audit.event(request.Context(), prefix+"_rejected", appendAttributes(baseAttributes,
+			slog.Int("status", http.StatusInternalServerError),
+			slog.String("code", "streaming_unavailable"),
+		)...)
+		writeJSONError(response, http.StatusInternalServerError, "streaming_unavailable", "response streaming is unavailable")
+		return false
+	}
+	defer clearAskWriteDeadline(response)
+
+	response.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	response.Header().Set("Cache-Control", "no-cache")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	response.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	startedAt := time.Now()
+	audit.event(request.Context(), prefix+"_started", appendAttributes(baseAttributes, slog.Int("status", http.StatusOK))...)
+
+	writeFailed := false
+	completed := false
+	finishReason := ""
+	lastIteration := 0
+	toolCalls := 0
+	var usage AskUsage
+	var activeToolName string
+	var activeToolStartedAt time.Time
+	var streamBytes int64
+	recordEvent := func(event agent.Event) {
+		switch event.Type {
+		case agent.EventToolStarted:
+			toolCalls++
+			activeToolName = event.ToolName
+			activeToolStartedAt = time.Now()
+			audit.event(request.Context(), "tool_started",
+				slog.String("tool_name", event.ToolName),
+				slog.Int("iteration", event.Iteration),
 			)
-		}
-		terminalAttributes := []slog.Attr{
-			slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
-			slog.Int("iterations", lastIteration),
-			slog.Int("tool_calls", toolCalls),
-			slog.Int64("input_tokens", usage.InputTokens),
-			slog.Int64("output_tokens", usage.OutputTokens),
-			slog.Int64("total_tokens", usage.TotalTokens),
-		}
-		if failureCode == "" {
-			terminalAttributes = append(terminalAttributes, slog.String("finish_reason", finishReason))
-			audit.event(request.Context(), "ask_completed", terminalAttributes...)
-		} else {
-			terminalAttributes = append(terminalAttributes, slog.String("code", failureCode))
-			audit.event(request.Context(), "ask_failed", terminalAttributes...)
-		}
-		if err != nil && !completed && !writeFailed && request.Context().Err() == nil {
-			code := "agent_failed"
-			message := "the agent could not complete the request"
-			if errors.Is(err, context.DeadlineExceeded) {
-				code = "request_timeout"
-				message = "the agent request timed out"
+		case agent.EventToolFinished:
+			duration := int64(0)
+			if activeToolName == event.ToolName && !activeToolStartedAt.IsZero() {
+				duration = time.Since(activeToolStartedAt).Milliseconds()
 			}
-			if deadlineErr := setAskWriteDeadline(response); deadlineErr != nil {
-				return
+			attributes := []slog.Attr{
+				slog.String("tool_name", event.ToolName),
+				slog.Int("iteration", event.Iteration),
+				slog.Bool("tool_error", event.ToolError),
+				slog.Int64("duration_ms", duration),
 			}
-			_ = writeSSE(response, flusher, &streamBytes, AskEvent{
-				Type:    "error",
-				Code:    code,
-				Message: message,
-			})
+			if event.ToolError {
+				attributes = append(attributes, slog.String("code", "tool_error"))
+			}
+			audit.event(request.Context(), "tool_finished", attributes...)
+			activeToolName = ""
+			activeToolStartedAt = time.Time{}
+		case agent.EventUsage:
+			usage.InputTokens = saturatingAdd(usage.InputTokens, event.Usage.InputTokens)
+			usage.OutputTokens = saturatingAdd(usage.OutputTokens, event.Usage.OutputTokens)
+			usage.TotalTokens = saturatingAdd(usage.TotalTokens, event.Usage.TotalTokens)
+			audit.event(request.Context(), "llm_usage",
+				slog.Int("iteration", event.Iteration),
+				slog.Int64("input_tokens", event.Usage.InputTokens),
+				slog.Int64("output_tokens", event.Usage.OutputTokens),
+				slog.Int64("total_tokens", event.Usage.TotalTokens),
+			)
+		case agent.EventCompleted:
+			completed = true
+			finishReason = string(event.FinishReason)
 		}
 	}
+	err := run(func(event agent.Event) error {
+		lastIteration = max(lastIteration, event.Iteration)
+		if event.Type != agent.EventToolStarted {
+			recordEvent(event)
+		}
+		streamEvent := newAskEvent(event)
+		if err := setAskWriteDeadline(response); err != nil {
+			writeFailed = true
+			return err
+		}
+		if err := writeSSE(response, flusher, &streamBytes, streamEvent); err != nil {
+			writeFailed = true
+			return err
+		}
+		if event.Type == agent.EventToolStarted {
+			recordEvent(event)
+		}
+		return nil
+	})
+	failureCode := askFailureCode(err, completed, writeFailed, request.Context().Err())
+	if activeToolName != "" && failureCode == "" {
+		failureCode = "agent_incomplete"
+	}
+	if activeToolName != "" {
+		audit.event(request.Context(), "tool_finished",
+			slog.String("tool_name", activeToolName),
+			slog.Int("iteration", lastIteration),
+			slog.Bool("tool_error", true),
+			slog.Int64("duration_ms", time.Since(activeToolStartedAt).Milliseconds()),
+			slog.String("code", failureCode),
+		)
+	}
+	terminalAttributes := []slog.Attr{
+		slog.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+		slog.Int("iterations", lastIteration),
+		slog.Int("tool_calls", toolCalls),
+		slog.Int64("input_tokens", usage.InputTokens),
+		slog.Int64("output_tokens", usage.OutputTokens),
+		slog.Int64("total_tokens", usage.TotalTokens),
+	}
+	if failureCode == "" {
+		terminalAttributes = append(terminalAttributes, slog.String("finish_reason", finishReason))
+		audit.event(request.Context(), prefix+"_completed", appendAttributes(baseAttributes, terminalAttributes...)...)
+	} else {
+		terminalAttributes = append(terminalAttributes, slog.String("code", failureCode))
+		audit.event(request.Context(), prefix+"_failed", appendAttributes(baseAttributes, terminalAttributes...)...)
+	}
+	if err != nil && !completed && !writeFailed && request.Context().Err() == nil {
+		code := "agent_failed"
+		message := "the agent could not complete the request"
+		if errors.Is(err, context.DeadlineExceeded) {
+			code = "request_timeout"
+			message = "the agent request timed out"
+		}
+		if deadlineErr := setAskWriteDeadline(response); deadlineErr != nil {
+			return true
+		}
+		_ = writeSSE(response, flusher, &streamBytes, AskEvent{
+			Type:    "error",
+			Code:    code,
+			Message: message,
+		})
+	}
+	return true
+}
+
+func appendAttributes(base []slog.Attr, extra ...slog.Attr) []slog.Attr {
+	attributes := make([]slog.Attr, 0, len(base)+len(extra))
+	attributes = append(attributes, base...)
+	return append(attributes, extra...)
 }
 
 func askFailureCode(err error, completed bool, writeFailed bool, contextErr error) string {
