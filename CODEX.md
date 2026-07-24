@@ -15,8 +15,10 @@ servers remain the deterministic OpenSVC integration layer.
 The current implementation exposes an HTTP health endpoint, an authenticated
 MCP client, provider-neutral LLM contracts, Responses and Chat Completions
 protocol adapters, an agent loop coordinating LLM turns with MCP tool calls,
-and an authenticated one-shot SSE ask API. Add other protocol adapters,
-persistent sessions, or om3 integration code only as an explicit project step.
+an authenticated one-shot SSE ask API, a provider-neutral conversation turn
+engine, and a local SQLite conversation store not yet wired to the API. Add
+other protocol adapters or om3 integration code only as an explicit project
+step.
 
 ## Build order
 
@@ -30,7 +32,7 @@ active project step:
    - Keep `Agent.Ask` and `POST /v1/ask` as non-persistent one-shot wrappers.
    - Open and close a request-scoped MCP session for every turn; conversations
      must never retain MCP sessions, JWTs, or provider-specific state.
-2. Local SQLite conversation store.
+2. Local SQLite conversation store. Complete.
    - Introduce a storage interface independent from SQLite and the API layer.
    - Persist conversations, turns, and provider-neutral messages, including the
      bounded tool calls and results required to reconstruct LLM context.
@@ -79,7 +81,7 @@ active project step:
    - Design `ox ai` and an optional authenticated OpenSVC daemon proxy without
      exposing the agent or MCP listener to the network.
 
-The next incomplete step is step 2. The OpenSVC JWT belongs only to the
+The next incomplete step is step 3. The OpenSVC JWT belongs only to the
 authenticated agent, MCP, and daemon path. It must never enter an LLM request,
 LLM context, persisted conversation, prompt, tool argument, provider
 configuration, or audit record.
@@ -89,6 +91,7 @@ configuration, or audit record.
 - Go 1.25.5 or later
 - Go standard library HTTP server
 - Go testing and httptest
+- SQLite through `database/sql` and the pure-Go `modernc.org/sqlite` driver
 
 Keep dependencies minimal. Do not add a web framework while the API remains
 small enough for `net/http`.
@@ -123,6 +126,17 @@ internal/
     config_test.go
     jwt.go
     mcp.go
+  conversation/
+    model.go
+    store.go
+    sqlite/
+      codec.go
+      migrations.go
+      operations.go
+      store.go
+      store_test.go
+      migrations/
+        001_initial.sql
   llm/
     client.go
     types.go
@@ -150,7 +164,10 @@ internal/
 in `internal/api`; process configuration belongs in `internal/config`;
 request-scoped credentials belong in `internal/auth`; MCP transport belongs in
 `internal/mcpclient`; provider-neutral model and tool-call contracts belong in
-`internal/llm`; LLM/MCP orchestration belongs in `internal/agent`.
+`internal/llm`; LLM/MCP orchestration belongs in `internal/agent`;
+conversation domain types and the storage contract belong in
+`internal/conversation`; the SQLite adapter belongs in
+`internal/conversation/sqlite`.
 
 The composition root loads and validates HTTP, JWT, LLM, MCP, and agent
 configuration; constructs one shared JWT verifier, LLM client, MCP client, and
@@ -163,6 +180,16 @@ and retains the JWT only in private request context. `Agent.Ask` wraps
 request-scoped MCP session using the same JWT. It injects the current system
 prompt outside persisted history and returns only the complete new user,
 assistant, tool-call, and tool-result messages.
+
+The SQLite conversation store is local to one node and is not constructed by
+the composition root until the conversation service exists. It uses embedded
+migrations, WAL with full synchronous writes, foreign keys, secure deletion,
+owner-filtered operations, atomic turn completion, and strict provider-neutral
+message encoding. It permits one writer connection, stores no partial model
+output, marks abandoned running turns interrupted on explicit recovery, and
+enforces logical conversation and database limits. The database directory and
+file must deny group and other access. JWTs, provider credentials, system
+prompts, grants, authorization headers, and audit records never enter it.
 
 `internal/agent` opens one request-scoped MCP session, exposes every discovered
 MCP tool to the model, and executes requested tools sequentially. Tool arguments
