@@ -23,48 +23,66 @@ persistent sessions, or om3 integration code only as an explicit project step.
 Implement the first incomplete step only unless the user explicitly expands the
 active project step:
 
-1. Authenticated MCP Streamable HTTP client with request-scoped JWT delegation. Complete.
-2. Provider-neutral LLM client types. Complete.
-3. Responses protocol adapter. Complete.
-4. Agent loop coordinating LLM tool calls with MCP tool execution. Complete.
-5. `POST /v1/ask`, carrying the caller JWT from the HTTP request to MCP. Complete.
-6. Runtime availability and cost hardening. Complete.
-   - Add one configurable end-to-end deadline for each ask, including bounded
-     SSE writes and MCP session cleanup. Complete.
-   - Bound MCP response bodies before the SDK decodes them. Complete. Tool
-     execution and OpenSVC daemon request timeouts belong to the MCP server; the
-     agent keeps only its end-to-end ask deadline.
-   - Add process-wide ask admission control returning an HTTP error before SSE
-     and a per-ask total tool-call budget. Complete. Model work is bounded by
-     maximum iterations, per-request output tokens, and request and stream size
-     limits.
-   - Bound the MCP tool count, complete definitions, and individual and
-     aggregate model-visible schemas. Complete.
-   - Bound protocol-adapter tool-call accumulation. Complete.
-7. Agent-side tool authorization policy. Deferred until sensitive tools exist.
-   - The agent consumes the bounded MCP catalog dynamically and does not infer
-     OpenSVC permissions from tool names, annotations, or JWT grants.
-   - The OpenSVC daemon API remains authoritative for grant enforcement on each
-     operation. The MCP delegates the caller JWT and returns authorization
-     failures as tool errors for model reasoning.
-   - Design explicit intent confirmation and additional agent policy before
-     exposing destructive or otherwise sensitive tools.
-8. Structured operational audit logging. Complete.
-   - Generate a server-side request ID and record bounded structured events for
-     authentication rejection, ask lifecycle, tool lifecycle, usage, and stable
-     failure codes. Complete.
-   - Never log JWTs, authorization headers, prompts, model text, tool arguments
-     or results, provider credentials, or raw upstream errors. Complete.
-9. Graceful shutdown and HTTP hardening. Complete.
-   - Drain in-flight asks with a bounded shutdown deadline. Complete.
-   - Remove the inbound Authorization header after verification, set an
-     explicit maximum header size, and document JWT verification-key rotation.
-     Complete.
-10. One-shot `om ai ask` client integration. Pending.
+1. Provider-neutral conversation turn engine.
+   - Refactor the current one-shot loop behind an internal turn method accepting
+     bounded provider-neutral history and returning the complete messages
+     produced by the turn.
+   - Keep `Agent.Ask` and `POST /v1/ask` as non-persistent one-shot wrappers.
+   - Open and close a request-scoped MCP session for every turn; conversations
+     must never retain MCP sessions, JWTs, or provider-specific state.
+2. Local SQLite conversation store.
+   - Introduce a storage interface independent from SQLite and the API layer.
+   - Persist conversations, turns, and provider-neutral messages, including the
+     bounded tool calls and results required to reconstruct LLM context.
+   - Use embedded migrations, transactions, WAL mode, owner-only file
+     permissions, retention, size limits, and interrupted-turn recovery.
+   - Never persist JWTs, authorization headers, provider credentials, grants,
+     system prompts, or raw audit data.
+3. Conversation service.
+   - Bind every conversation to the authenticated OpenSVC issuer and subject.
+   - Serialize turns per conversation without holding a database transaction
+     during LLM or MCP work.
+   - Commit only completed messages to future model context; record failed,
+     canceled, and interrupted turns without replaying partial output.
+   - Enforce bounded history, turn count, stored bytes, expiry, and deletion.
+4. Authenticated conversation API.
+   - Add `POST /v1/conversations`, `GET /v1/conversations`,
+     `GET /v1/conversations/{id}`, and
+     `DELETE /v1/conversations/{id}`.
+   - Add streaming `POST /v1/conversations/{id}/turns` using the existing SSE
+     event contract.
+   - Return stable ownership-safe errors, including `conversation_busy` and
+     `conversation_expired`, without disclosing another user's conversation.
+   - Add bounded structured audit events containing identifiers and counters,
+     never conversation content.
+5. Local interactive `om ai` client.
+   - Preserve `om ai ask` for one-shot use.
+   - Add a local prompt loop that creates or resumes a conversation and obtains
+     a fresh short-lived OpenSVC JWT for every turn.
+   - Make Ctrl+C cancel only the active turn; support clean EOF and explicit
+     exit, with no client-side conversation persistence.
+6. Conversation hardening and end-to-end validation.
+   - Test ownership isolation, concurrent turns, expiry, deletion, migration,
+     crash recovery, database failures, bounded context, SSE disconnects, and
+     graceful shutdown with active conversations.
+   - Run a real multi-turn workflow through LLM, MCP, and the OpenSVC daemon and
+     verify restart and resume behavior.
+7. Local service deployment and Unix sockets.
+   - Version independent systemd units for the agent and MCP without making the
+     OpenSVC daemon depend on either service.
+   - Run under dedicated unprivileged users, protect state and credentials, and
+     apply systemd filesystem, privilege, and resource hardening.
+   - Replace agent and MCP loopback listeners with permissioned Unix sockets
+     while preserving their HTTP contracts.
+8. Remote OpenSVC client integration. Deferred until local interactive use is
+   complete.
+   - Design `ox ai` and an optional authenticated OpenSVC daemon proxy without
+     exposing the agent or MCP listener to the network.
 
-The next incomplete step is step 10. The OpenSVC JWT belongs only to the MCP
-path. It must never enter an LLM request, LLM context, prompt, tool argument, or
-provider configuration.
+The next incomplete step is step 1. The OpenSVC JWT belongs only to the
+authenticated agent, MCP, and daemon path. It must never enter an LLM request,
+LLM context, persisted conversation, prompt, tool argument, provider
+configuration, or audit record.
 
 ## Technology
 
