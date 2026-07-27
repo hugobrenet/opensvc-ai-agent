@@ -57,7 +57,7 @@ active project step:
      `conversation_expired`, without disclosing another user's conversation.
    - Add bounded structured audit events containing identifiers and counters,
      never conversation content.
-5. Local interactive `om ai` client.
+5. Local interactive `om ai` client. Complete in om3.
    - Preserve `om ai ask` for one-shot use.
    - Add a local prompt loop that creates or resumes a conversation and obtains
      a fresh short-lived OpenSVC JWT for every turn.

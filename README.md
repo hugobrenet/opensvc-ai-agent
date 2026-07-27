@@ -3,8 +3,8 @@
 Standalone Go daemon that orchestrates LLM providers and OpenSVC MCP servers
 for authenticated AI-assisted cluster diagnostics.
 
-The project is intentionally independent from the om3 daemon. Its future API
-will let command-line clients submit prompts while the agent coordinates LLM
+The project is intentionally independent from the om3 daemon. Its local API
+lets command-line clients submit prompts while the agent coordinates LLM
 providers and OpenSVC MCP tools.
 
 ## Current status
@@ -19,7 +19,8 @@ tools, lets the LLM select them, executes calls, returns results to the LLM,
 and repeats until a final answer. Authenticated one-shot and persistent
 conversation APIs expose the agent event stream over SSE. Conversations are
 stored locally in SQLite and isolated by the verified OpenSVC issuer and
-subject. Interactive om3 integration is not implemented yet.
+subject. The om3 client provides one-shot prompts, persistent interactive
+sessions, and conversation metadata management through `om ai`.
 
 The API emits structured JSON operational audit records to stdout. Every HTTP
 request receives a server-generated `X-Request-ID` for correlation.
@@ -161,6 +162,24 @@ Expected response:
 {"status":"ok"}
 ```
 
+## om3 client
+
+The local om3 client is the recommended user interface for the agent:
+
+```bash
+om ai ask "Assess the health of my cluster"
+om ai chat
+om ai list
+```
+
+`om ai chat` creates a persistent conversation. Pass the displayed conversation
+ID to resume it later with `om ai chat CONVERSATION_ID`. The client obtains
+short-lived access tokens from the local OpenSVC daemon and never stores
+conversation state itself.
+
+See the [interactive om client guide](docs/om-ai.md) for command details,
+examples, controls, output formats, and troubleshooting.
+
 ## One-shot ask
 
 `POST /v1/ask` accepts one prompt and streams agent events as SSE. After local
@@ -198,6 +217,9 @@ Only the JWT identity that created a conversation can access it. A second turn
 on the same conversation is rejected with `conversation_busy`. Successful
 turns extend the configured expiry; failed, canceled, and interrupted turns do
 not enter future model context.
+
+The [interactive om client guide](docs/om-ai.md) documents how to create,
+resume, inspect, and delete these conversations from the command line.
 
 ## Operational audit
 
