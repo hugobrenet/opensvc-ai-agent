@@ -9,6 +9,7 @@ type Owner struct {
 
 type Conversation struct {
 	ID          string
+	Title       string
 	Owner       Owner
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

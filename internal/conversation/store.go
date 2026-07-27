@@ -21,6 +21,7 @@ type Store interface {
 	CreateConversation(context.Context, Conversation) error
 	GetConversation(context.Context, Owner, string) (Conversation, error)
 	ListConversations(context.Context, Owner, int) ([]Conversation, error)
+	UpdateConversationTitle(context.Context, Owner, string, string, time.Time) (Conversation, error)
 	DeleteConversation(context.Context, Owner, string) error
 
 	BeginTurn(context.Context, Owner, string, string, time.Time) (Turn, error)

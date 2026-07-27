@@ -13,6 +13,7 @@ var migrationFiles embed.FS
 
 var migrations = []string{
 	"migrations/001_initial.sql",
+	"migrations/002_conversation_title.sql",
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

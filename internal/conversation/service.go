@@ -152,6 +152,18 @@ func (s *Service) Delete(ctx context.Context, identity auth.Identity, id string)
 	return s.store.DeleteConversation(ctx, item.Owner, item.ID)
 }
 
+func (s *Service) UpdateTitle(ctx context.Context, identity auth.Identity, id string, title string) (Conversation, error) {
+	title, err := NormalizeTitle(title)
+	if err != nil {
+		return Conversation{}, err
+	}
+	item, err := s.Get(ctx, identity, id)
+	if err != nil {
+		return Conversation{}, err
+	}
+	return s.store.UpdateConversationTitle(ctx, item.Owner, item.ID, title, s.now().UTC())
+}
+
 type TurnExecution interface {
 	Run(context.Context, agent.EmitFunc) error
 	Cancel(string) error

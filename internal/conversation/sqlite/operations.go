@@ -39,9 +39,10 @@ func (s *Store) CreateConversation(ctx context.Context, item conversation.Conver
 		return fmt.Errorf("%w: maximum conversation count is %d", conversation.ErrLimit, s.config.MaxConversations)
 	}
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO conversations(id, issuer, subject, created_at, updated_at, expires_at, stored_bytes)
-VALUES (?, ?, ?, ?, ?, ?, 0)`,
+INSERT INTO conversations(id, title, issuer, subject, created_at, updated_at, expires_at, stored_bytes)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
 		item.ID,
+		item.Title,
 		item.Owner.Issuer,
 		item.Owner.Subject,
 		toUnixNano(item.CreatedAt),
@@ -65,7 +66,7 @@ func (s *Store) GetConversation(ctx context.Context, owner conversation.Owner, i
 		return conversation.Conversation{}, err
 	}
 	return scanConversation(s.db.QueryRowContext(ctx, `
-SELECT id, issuer, subject, created_at, updated_at, expires_at, stored_bytes
+SELECT id, title, issuer, subject, created_at, updated_at, expires_at, stored_bytes
 FROM conversations
 WHERE id = ? AND issuer = ? AND subject = ?`, id, owner.Issuer, owner.Subject))
 }
@@ -78,7 +79,7 @@ func (s *Store) ListConversations(ctx context.Context, owner conversation.Owner,
 		return nil, fmt.Errorf("%w: conversation list limit must be between 1 and %d", conversation.ErrInvalid, maxListLimit)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, issuer, subject, created_at, updated_at, expires_at, stored_bytes
+SELECT id, title, issuer, subject, created_at, updated_at, expires_at, stored_bytes
 FROM conversations
 WHERE issuer = ? AND subject = ?
 ORDER BY updated_at DESC, id
@@ -133,6 +134,46 @@ func (s *Store) DeleteConversation(ctx context.Context, owner conversation.Owner
 		return fmt.Errorf("commit delete conversation: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) UpdateConversationTitle(ctx context.Context, owner conversation.Owner, id string, title string, updatedAt time.Time) (conversation.Conversation, error) {
+	if err := validateOwnerAndID(owner, id); err != nil {
+		return conversation.Conversation{}, err
+	}
+	if err := validateStoredTitle(title, false); err != nil {
+		return conversation.Conversation{}, err
+	}
+	if updatedAt.IsZero() {
+		return conversation.Conversation{}, fmt.Errorf("%w: conversation update time is zero", conversation.ErrInvalid)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return conversation.Conversation{}, fmt.Errorf("begin update conversation title transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	item, err := scanConversation(tx.QueryRowContext(ctx, `
+SELECT id, title, issuer, subject, created_at, updated_at, expires_at, stored_bytes
+FROM conversations
+WHERE id = ? AND issuer = ? AND subject = ?`, id, owner.Issuer, owner.Subject))
+	if err != nil {
+		return conversation.Conversation{}, err
+	}
+	updatedAt = updatedAt.UTC()
+	if updatedAt.Before(item.UpdatedAt) {
+		return conversation.Conversation{}, fmt.Errorf("%w: conversation update time precedes current update", conversation.ErrInvalid)
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE conversations
+SET title = ?, updated_at = ?
+WHERE id = ? AND issuer = ? AND subject = ?`, title, toUnixNano(updatedAt), id, owner.Issuer, owner.Subject); err != nil {
+		return conversation.Conversation{}, fmt.Errorf("update conversation title: %w", err)
+	}
+	item.Title = title
+	item.UpdatedAt = updatedAt
+	if err := tx.Commit(); err != nil {
+		return conversation.Conversation{}, fmt.Errorf("commit update conversation title: %w", err)
+	}
+	return item, nil
 }
 
 func (s *Store) BeginTurn(ctx context.Context, owner conversation.Owner, conversationID string, turnID string, startedAt time.Time) (conversation.Turn, error) {
@@ -206,6 +247,7 @@ func (s *Store) CompleteTurn(ctx context.Context, owner conversation.Owner, conv
 	if err != nil {
 		return fmt.Errorf("%w: %v", conversation.ErrInvalid, err)
 	}
+	initialTitle := conversation.TitleFromPrompt(messages[0].Text)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin complete turn transaction: %w", err)
@@ -263,8 +305,9 @@ WHERE id = ? AND conversation_id = ? AND status = 'running'`, toUnixNano(complet
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE conversations
-SET stored_bytes = stored_bytes + ?, updated_at = ?, expires_at = ?
-WHERE id = ?`, addedBytes, toUnixNano(completedAt), toUnixNano(expiresAt), conversationID); err != nil {
+SET title = CASE WHEN title = '' THEN ? ELSE title END,
+    stored_bytes = stored_bytes + ?, updated_at = ?, expires_at = ?
+WHERE id = ?`, initialTitle, addedBytes, toUnixNano(completedAt), toUnixNano(expiresAt), conversationID); err != nil {
 		return fmt.Errorf("update completed conversation: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -461,6 +504,7 @@ func scanConversation(scanner rowScanner) (conversation.Conversation, error) {
 	var createdAt, updatedAt, expiresAt int64
 	if err := scanner.Scan(
 		&item.ID,
+		&item.Title,
 		&item.Owner.Issuer,
 		&item.Owner.Subject,
 		&createdAt,
@@ -548,6 +592,23 @@ func validateConversation(item conversation.Conversation) error {
 	}
 	if item.StoredBytes != 0 {
 		return fmt.Errorf("%w: new conversation stored bytes must be zero", conversation.ErrInvalid)
+	}
+	if err := validateStoredTitle(item.Title, true); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateStoredTitle(title string, allowEmpty bool) error {
+	if title == "" && allowEmpty {
+		return nil
+	}
+	normalized, err := conversation.NormalizeTitle(title)
+	if err != nil {
+		return err
+	}
+	if normalized != title {
+		return fmt.Errorf("%w: conversation title is not normalized", conversation.ErrInvalid)
 	}
 	return nil
 }

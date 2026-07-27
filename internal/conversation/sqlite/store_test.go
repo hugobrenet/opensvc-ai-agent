@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,7 +66,7 @@ func TestStorePersistsConversationAndToolHistory(t *testing.T) {
 		t.Fatalf("LoadHistory() = %#v, want %#v", history, messages)
 	}
 	got, err = store.GetConversation(t.Context(), testOwner, item.ID)
-	if err != nil || got.StoredBytes <= 0 || !got.UpdatedAt.Equal(testNow.Add(2*time.Second)) || !got.ExpiresAt.Equal(testNow.Add(time.Hour)) {
+	if err != nil || got.Title != conversation.TitleFromPrompt(messages[0].Text) || got.StoredBytes <= 0 || !got.UpdatedAt.Equal(testNow.Add(2*time.Second)) || !got.ExpiresAt.Equal(testNow.Add(time.Hour)) {
 		t.Fatalf("completed conversation = %#v, %v", got, err)
 	}
 	var journalMode string
@@ -103,6 +104,41 @@ func TestStorePersistsConversationAndToolHistory(t *testing.T) {
 		if err := reopened.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("%s count = %d, %v", table, count, err)
 		}
+	}
+}
+
+func TestStoreUpdatesTitleWithoutOverwritingItOnCompletion(t *testing.T) {
+	store, _ := openTestStore(t, Config{})
+	item := testConversation("conversation-1", testOwner, testNow)
+	if err := store.CreateConversation(t.Context(), item); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.UpdateConversationTitle(t.Context(), testOwner, item.ID, "Database incident", testNow.Add(time.Second))
+	if err != nil {
+		t.Fatalf("UpdateConversationTitle() error: %v", err)
+	}
+	if updated.Title != "Database incident" || !updated.UpdatedAt.Equal(testNow.Add(time.Second)) {
+		t.Fatalf("UpdateConversationTitle() = %#v", updated)
+	}
+	if _, err := store.UpdateConversationTitle(t.Context(), conversation.Owner{Issuer: "node-a", Subject: "bob"}, item.ID, "Foreign", testNow.Add(time.Second)); !errors.Is(err, conversation.ErrNotFound) {
+		t.Fatalf("cross-owner UpdateConversationTitle() error = %v", err)
+	}
+	if _, err := store.UpdateConversationTitle(t.Context(), testOwner, item.ID, " not normalized ", testNow.Add(time.Second)); !errors.Is(err, conversation.ErrInvalid) {
+		t.Fatalf("unnormalized UpdateConversationTitle() error = %v", err)
+	}
+	turn, err := store.BeginTurn(t.Context(), testOwner, item.ID, "turn-1", testNow.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteTurn(t.Context(), testOwner, item.ID, turn.ID, testNow.Add(3*time.Second), testNow.Add(time.Hour), []llm.Message{
+		{Role: llm.RoleUser, Text: "This prompt must not replace the title"},
+		{Role: llm.RoleAssistant, Text: "done"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetConversation(t.Context(), testOwner, item.ID)
+	if err != nil || got.Title != "Database incident" {
+		t.Fatalf("completed conversation = %#v, %v", got, err)
 	}
 }
 
@@ -158,6 +194,9 @@ func TestStoreSerializesTurnsAndRecoversInterrupted(t *testing.T) {
 	}
 	if history, err := store.LoadHistory(t.Context(), testOwner, item.ID); err != nil || len(history) != 0 {
 		t.Fatalf("failed turn history = %#v, %v", history, err)
+	}
+	if got, err := store.GetConversation(t.Context(), testOwner, item.ID); err != nil || got.Title != "" {
+		t.Fatalf("failed turn conversation = %#v, %v", got, err)
 	}
 	var interrupted, canceled int
 	if err := store.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM turns WHERE status = 'interrupted'").Scan(&interrupted); err != nil {
@@ -320,7 +359,7 @@ func TestOpenRejectsUnsafeFilesAndNewerSchema(t *testing.T) {
 	})
 	t.Run("newer schema", func(t *testing.T) {
 		store, path := openTestStore(t, Config{})
-		if _, err := store.db.ExecContext(t.Context(), "INSERT INTO schema_migrations(version, applied_at) VALUES (2, ?)", testNow.UnixNano()); err != nil {
+		if _, err := store.db.ExecContext(t.Context(), "INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?)", testNow.UnixNano()); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.Close(); err != nil {
@@ -340,6 +379,62 @@ func TestOpenRejectsUnsafeFilesAndNewerSchema(t *testing.T) {
 			t.Fatal("Open() accepted corrupt database")
 		}
 	})
+}
+
+func TestOpenMigratesExistingConversationTitles(t *testing.T) {
+	directory := secureTempDir(t)
+	path := filepath.Join(directory, "conversations.db")
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := migrationFiles.ReadFile("migrations/001_initial.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at INTEGER NOT NULL
+);`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), string(initial)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?)", testNow.UnixNano()); err != nil {
+		t.Fatal(err)
+	}
+	item := testConversation("conversation-1", testOwner, testNow)
+	if _, err := db.ExecContext(t.Context(), `
+INSERT INTO conversations(id, issuer, subject, created_at, updated_at, expires_at, stored_bytes)
+VALUES (?, ?, ?, ?, ?, ?, 0)`, item.ID, item.Owner.Issuer, item.Owner.Subject, toUnixNano(item.CreatedAt), toUnixNano(item.UpdatedAt), toUnixNano(item.ExpiresAt)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(t.Context(), Config{Path: path})
+	if err != nil {
+		t.Fatalf("Open() migration error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	got, err := store.GetConversation(t.Context(), testOwner, item.ID)
+	if err != nil || got.Title != "" {
+		t.Fatalf("migrated conversation = %#v, %v", got, err)
+	}
+	var version int
+	if err := store.db.QueryRowContext(t.Context(), "SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 2 {
+		t.Fatalf("schema version = %d, %v", version, err)
+	}
 }
 
 func TestLoadHistoryRejectsCorruptRows(t *testing.T) {

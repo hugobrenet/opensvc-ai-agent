@@ -95,6 +95,28 @@ func TestServiceRejectsExpiredAndBusyConversation(t *testing.T) {
 	}
 }
 
+func TestServiceUpdatesNormalizedConversationTitle(t *testing.T) {
+	store := newServiceTestStore()
+	service := newTestService(t, store, turnRunnerFunc(func(context.Context, []llm.Message, string, agent.EmitFunc) (agent.TurnResult, error) {
+		return agent.TurnResult{}, nil
+	}))
+
+	item, err := service.UpdateTitle(t.Context(), serviceTestIdentity(), store.item.ID, "  Cluster\n health  ")
+	if err != nil {
+		t.Fatalf("update title: %v", err)
+	}
+	if item.Title != "Cluster health" || store.item.Title != item.Title || !item.UpdatedAt.Equal(serviceTestNow) {
+		t.Fatalf("updated conversation = %#v, stored = %#v", item, store.item)
+	}
+	if _, err := service.UpdateTitle(t.Context(), serviceTestIdentity(), store.item.ID, " \t "); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty title error = %v", err)
+	}
+	store.item.ExpiresAt = serviceTestNow
+	if _, err := service.UpdateTitle(t.Context(), serviceTestIdentity(), store.item.ID, "Expired"); !errors.Is(err, ErrExpired) {
+		t.Fatalf("expired title update error = %v", err)
+	}
+}
+
 func TestBoundHistoryKeepsCompleteNewestTurns(t *testing.T) {
 	history := []llm.Message{
 		{Role: llm.RoleUser, Text: "old"}, {Role: llm.RoleAssistant, Text: "old answer"},
@@ -157,6 +179,14 @@ func (s *serviceTestStore) GetConversation(_ context.Context, owner Owner, id st
 }
 func (s *serviceTestStore) ListConversations(context.Context, Owner, int) ([]Conversation, error) {
 	return []Conversation{s.item}, nil
+}
+func (s *serviceTestStore) UpdateConversationTitle(_ context.Context, owner Owner, id string, title string, updatedAt time.Time) (Conversation, error) {
+	if owner != s.item.Owner || id != s.item.ID {
+		return Conversation{}, ErrNotFound
+	}
+	s.item.Title = title
+	s.item.UpdatedAt = updatedAt
+	return s.item, nil
 }
 func (s *serviceTestStore) DeleteConversation(context.Context, Owner, string) error { return nil }
 func (s *serviceTestStore) BeginTurn(context.Context, Owner, string, string, time.Time) (Turn, error) {
