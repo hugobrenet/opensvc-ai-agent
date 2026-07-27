@@ -75,6 +75,9 @@ func TestConversationFlowPersistsHistoryAndIsolatesOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := created.Conversation.ID
+	if created.Conversation.Title != "" {
+		t.Fatalf("new conversation title=%q", created.Conversation.Title)
+	}
 
 	otherOwnerResponse := httptest.NewRecorder()
 	handler.ServeHTTP(otherOwnerResponse, requestWithToken(http.MethodGet, "/v1/conversations/"+id, "bob", ""))
@@ -82,7 +85,7 @@ func TestConversationFlowPersistsHistoryAndIsolatesOwner(t *testing.T) {
 		t.Fatalf("other owner status=%d body=%s", otherOwnerResponse.Code, otherOwnerResponse.Body.String())
 	}
 
-	for _, prompt := range []string{"first", "second"} {
+	for index, prompt := range []string{"first", "second"} {
 		response := httptest.NewRecorder()
 		request := requestWithToken(http.MethodPost, "/v1/conversations/"+id+"/turns", "alice", `{"prompt":"`+prompt+`"}`)
 		request.Header.Set("Content-Type", "application/json")
@@ -90,6 +93,37 @@ func TestConversationFlowPersistsHistoryAndIsolatesOwner(t *testing.T) {
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"type":"completed"`) {
 			t.Fatalf("turn %q status=%d body=%s", prompt, response.Code, response.Body.String())
 		}
+		if index == 0 {
+			getResponse := httptest.NewRecorder()
+			handler.ServeHTTP(getResponse, requestWithToken(http.MethodGet, "/v1/conversations/"+id, "alice", ""))
+			var afterFirst ConversationEnvelope
+			if err := json.NewDecoder(getResponse.Body).Decode(&afterFirst); err != nil || afterFirst.Conversation.Title != "first" {
+				t.Fatalf("first title response=%+v error=%v", afterFirst, err)
+			}
+
+			foreignUpdate := requestWithToken(http.MethodPatch, "/v1/conversations/"+id, "bob", `{"title":"Foreign"}`)
+			foreignUpdate.Header.Set("Content-Type", "application/json")
+			foreignUpdateResponse := httptest.NewRecorder()
+			handler.ServeHTTP(foreignUpdateResponse, foreignUpdate)
+			if foreignUpdateResponse.Code != http.StatusNotFound {
+				t.Fatalf("foreign update status=%d body=%s", foreignUpdateResponse.Code, foreignUpdateResponse.Body.String())
+			}
+
+			update := requestWithToken(http.MethodPatch, "/v1/conversations/"+id, "alice", `{"title":"Renamed incident"}`)
+			update.Header.Set("Content-Type", "application/json")
+			updateResponse := httptest.NewRecorder()
+			handler.ServeHTTP(updateResponse, update)
+			var renamed ConversationEnvelope
+			if err := json.NewDecoder(updateResponse.Body).Decode(&renamed); err != nil || renamed.Conversation.Title != "Renamed incident" {
+				t.Fatalf("rename response=%+v error=%v status=%d", renamed, err, updateResponse.Code)
+			}
+		}
+	}
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, requestWithToken(http.MethodGet, "/v1/conversations/"+id, "alice", ""))
+	var afterSecond ConversationEnvelope
+	if err := json.NewDecoder(getResponse.Body).Decode(&afterSecond); err != nil || afterSecond.Conversation.Title != "Renamed incident" {
+		t.Fatalf("final title response=%+v error=%v", afterSecond, err)
 	}
 	history, err := store.LoadHistory(t.Context(), conversation.Owner{Issuer: "cluster", Subject: "alice"}, id)
 	if err != nil || len(history) != 4 {

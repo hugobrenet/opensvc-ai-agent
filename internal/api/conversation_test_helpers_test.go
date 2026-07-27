@@ -25,6 +25,10 @@ func (noopConversationService) Delete(context.Context, auth.Identity, string) er
 	return conversation.ErrNotFound
 }
 
+func (noopConversationService) UpdateTitle(context.Context, auth.Identity, string, string) (conversation.Conversation, error) {
+	return conversation.Conversation{}, conversation.ErrNotFound
+}
+
 func (noopConversationService) PrepareTurn(context.Context, auth.Identity, string, string) (conversation.TurnExecution, error) {
 	return nil, conversation.ErrNotFound
 }

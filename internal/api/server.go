@@ -42,6 +42,7 @@ func NewHandler(asker Asker, conversations ConversationService, verifier auth.To
 	mux.Handle("POST /v1/conversations", requireAccessToken(verifier, audit, serveCreateConversation(conversations, audit)))
 	mux.Handle("GET /v1/conversations", requireAccessToken(verifier, audit, serveListConversations(conversations, audit)))
 	mux.Handle("GET /v1/conversations/{id}", requireAccessToken(verifier, audit, serveGetConversation(conversations, audit)))
+	mux.Handle("PATCH /v1/conversations/{id}", requireAccessToken(verifier, audit, serveUpdateConversationTitle(conversations, audit)))
 	mux.Handle("DELETE /v1/conversations/{id}", requireAccessToken(verifier, audit, serveDeleteConversation(conversations, audit)))
 	mux.Handle("POST /v1/conversations/{id}/turns", requireAccessToken(verifier, audit, serveConversationTurn(conversations, limiter, audit)))
 	return withRequestID(mux), nil

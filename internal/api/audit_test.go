@@ -13,6 +13,7 @@ import (
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/agent"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/auth"
+	"github.com/hugobrenet/opensvc-ai-agent/internal/conversation"
 	"github.com/hugobrenet/opensvc-ai-agent/internal/llm"
 )
 
@@ -158,6 +159,40 @@ func TestAuditRecordsValidatedRequestRejection(t *testing.T) {
 	}
 	if events[0]["subject"] != "test-user" || events[0]["status"] != float64(http.StatusUnsupportedMediaType) {
 		t.Fatalf("rejection audit = %#v", events[0])
+	}
+}
+
+func TestAuditDoesNotRecordConversationTitle(t *testing.T) {
+	const titleMarker = "sensitive-conversation-title-marker"
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	service := conversationServiceFuncs{update: func(_ context.Context, _ auth.Identity, id string, title string) (conversation.Conversation, error) {
+		if id != "conversation-id" || title != titleMarker {
+			t.Fatalf("unexpected title update id=%q title=%q", id, title)
+		}
+		return conversation.Conversation{ID: id, Title: titleMarker}, nil
+	}}
+	handler, err := NewHandler(
+		askerFunc(func(context.Context, string, agent.EmitFunc) error { return nil }),
+		service, allowTestTokenVerifier(),
+		HandlerConfig{MaxConcurrentAsks: 4, AuditLogger: logger},
+	)
+	if err != nil {
+		t.Fatalf("create audited API handler: %v", err)
+	}
+	request := authenticatedRequest(http.MethodPatch, "/v1/conversations/conversation-id", `{"title":"`+titleMarker+`"}`)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(output.String(), titleMarker) {
+		t.Fatalf("audit log exposes title: %s", output.String())
+	}
+	events := decodeAuditEvents(t, output.String())
+	if len(events) != 1 || events[0]["event"] != "conversation_title_updated" || events[0]["conversation_id"] != "conversation-id" {
+		t.Fatalf("audit events = %#v", events)
 	}
 }
 

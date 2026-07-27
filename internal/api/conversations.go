@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"time"
 
@@ -13,20 +15,28 @@ import (
 	"github.com/hugobrenet/opensvc-ai-agent/internal/conversation"
 )
 
+const maxConversationTitleRequestBytes = 4 << 10
+
 type ConversationService interface {
 	Create(context.Context, auth.Identity) (conversation.Conversation, error)
 	Get(context.Context, auth.Identity, string) (conversation.Conversation, error)
 	List(context.Context, auth.Identity) ([]conversation.Conversation, error)
+	UpdateTitle(context.Context, auth.Identity, string, string) (conversation.Conversation, error)
 	Delete(context.Context, auth.Identity, string) error
 	PrepareTurn(context.Context, auth.Identity, string, string) (conversation.TurnExecution, error)
 }
 
 type ConversationResponse struct {
 	ID          string    `json:"id"`
+	Title       string    `json:"title"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	ExpiresAt   time.Time `json:"expires_at"`
 	StoredBytes int64     `json:"stored_bytes"`
+}
+
+type ConversationTitleRequest struct {
+	Title string `json:"title"`
 }
 
 type ConversationEnvelope struct {
@@ -117,6 +127,33 @@ func serveDeleteConversation(service ConversationService, audit auditLogger) htt
 	}
 }
 
+func serveUpdateConversationTitle(service ConversationService, audit auditLogger) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		id := request.PathValue("id")
+		titleRequest, status, apiError := decodeConversationTitleRequest(response, request)
+		if apiError != nil {
+			audit.event(request.Context(), "conversation_title_update_rejected",
+				slog.String("conversation_id", boundedAuditID(id)),
+				slog.Int("status", status), slog.String("code", apiError.Code),
+			)
+			writeJSONError(response, status, apiError.Code, apiError.Message)
+			return
+		}
+		identity, ok := auth.IdentityFromContext(request.Context())
+		if !ok {
+			writeUnauthorized(response)
+			return
+		}
+		item, err := service.UpdateTitle(request.Context(), identity, id, titleRequest.Title)
+		if err != nil {
+			writeConversationError(response, request, audit, "conversation_title_update_rejected", err, id)
+			return
+		}
+		audit.event(request.Context(), "conversation_title_updated", slog.String("conversation_id", boundedAuditID(id)))
+		writeJSON(response, http.StatusOK, ConversationEnvelope{Conversation: newConversationResponse(item)})
+	}
+}
+
 func serveConversationTurn(service ConversationService, limiter *askLimiter, audit auditLogger) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		turnRequest, status, apiError := decodeAskRequest(response, request)
@@ -154,9 +191,31 @@ func serveConversationTurn(service ConversationService, limiter *askLimiter, aud
 
 func newConversationResponse(item conversation.Conversation) ConversationResponse {
 	return ConversationResponse{
-		ID: item.ID, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+		ID: item.ID, Title: item.Title, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		ExpiresAt: item.ExpiresAt, StoredBytes: item.StoredBytes,
 	}
+}
+
+func decodeConversationTitleRequest(response http.ResponseWriter, request *http.Request) (ConversationTitleRequest, int, *APIError) {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return ConversationTitleRequest{}, http.StatusUnsupportedMediaType, &APIError{Code: "unsupported_media_type", Message: "Content-Type must be application/json"}
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, maxConversationTitleRequestBytes)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var titleRequest ConversationTitleRequest
+	if err := decoder.Decode(&titleRequest); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return ConversationTitleRequest{}, http.StatusRequestEntityTooLarge, &APIError{Code: "request_too_large", Message: "request body is too large"}
+		}
+		return ConversationTitleRequest{}, http.StatusBadRequest, &APIError{Code: "invalid_request", Message: "request body must be a JSON object containing a title"}
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return ConversationTitleRequest{}, http.StatusBadRequest, &APIError{Code: "invalid_request", Message: "request body must contain one JSON object"}
+	}
+	return titleRequest, 0, nil
 }
 
 func writeConversationError(response http.ResponseWriter, request *http.Request, audit auditLogger, event string, err error, id string) {

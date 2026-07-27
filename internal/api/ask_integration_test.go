@@ -107,6 +107,9 @@ func (integrationConversationService) List(context.Context, auth.Identity) ([]co
 func (integrationConversationService) Delete(context.Context, auth.Identity, string) error {
 	return conversation.ErrNotFound
 }
+func (integrationConversationService) UpdateTitle(context.Context, auth.Identity, string, string) (conversation.Conversation, error) {
+	return conversation.Conversation{}, conversation.ErrNotFound
+}
 func (integrationConversationService) PrepareTurn(context.Context, auth.Identity, string, string) (conversation.TurnExecution, error) {
 	return nil, conversation.ErrNotFound
 }
