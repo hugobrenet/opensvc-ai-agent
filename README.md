@@ -162,29 +162,41 @@ Expected response:
 {"status":"ok"}
 ```
 
-## om3 client
+## Quick start with `om ai`
 
 The local om3 client is the recommended user interface for the agent:
 
 ```bash
 om ai ask "Assess the health of my cluster"
 om ai chat
+om ai chat --resume
 om ai list
 ```
 
-`om ai chat` creates a persistent conversation. Pass the displayed conversation
-ID to resume it later with `om ai chat CONVERSATION_ID`. The client obtains
-short-lived access tokens from the local OpenSVC daemon and never stores
-conversation state itself.
+Use `ask` for a one-shot request and `chat` for a persistent interactive
+conversation. `chat --resume` displays existing conversations by title and
+opens the selected one. The client obtains short-lived access tokens from the
+local OpenSVC daemon and never stores conversation state itself.
 
 See the [interactive om client guide](docs/om-ai.md) for command details,
 examples, controls, output formats, and troubleshooting.
 
-## One-shot ask
+## HTTP API
 
-`POST /v1/ask` accepts one prompt and streams agent events as SSE. After local
-verification, the OpenSVC JWT remains request-scoped and is delegated only to
-MCP:
+The local API supports both one-shot requests and persistent conversations:
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /health` | Report daemon health. |
+| `POST /v1/ask` | Submit a non-persistent prompt and stream the response as SSE. |
+| `POST /v1/conversations` | Create an owned conversation. |
+| `GET /v1/conversations` | List owned conversations. |
+| `GET /v1/conversations/{id}` | Read conversation metadata. |
+| `PATCH /v1/conversations/{id}` | Change the conversation title. |
+| `DELETE /v1/conversations/{id}` | Delete a conversation. |
+| `POST /v1/conversations/{id}/turns` | Submit a persistent turn and stream the response as SSE. |
+
+For example, submit a one-shot prompt with:
 
 ```bash
 curl -N http://127.0.0.1:8090/v1/ask \
@@ -193,33 +205,15 @@ curl -N http://127.0.0.1:8090/v1/ask \
   -d '{"prompt":"Assess the health of my cluster."}'
 ```
 
-The stream can contain `text_delta`, `tool_started`, `tool_finished`, `usage`,
-`completed`, and `error` events. Tool arguments, tool results, provider errors,
-and credentials are not exposed by this API. Authentication and request
-validation failures use JSON HTTP errors before streaming starts. Runtime
-failures use a generic terminal `error` SSE event because the HTTP 200 response
-has already started. The stable error code is `agent_failed`, or
-`request_timeout` when an operation deadline expires. Each SSE write must
-complete within 15 seconds so a client that stops reading cannot retain an ask
-indefinitely. When four asks are already running by default, a new request is
-rejected before SSE with HTTP `429`, error code `too_many_requests`, and a
-`Retry-After` header.
+Except for `/health`, endpoints require a valid OpenSVC access JWT. Streaming
+endpoints emit text, tool progress, usage, completion, and generic error events
+without exposing credentials, tool payloads, or provider errors.
 
-## Conversations
-
-Create and list owned conversations with `POST /v1/conversations` and
-`GET /v1/conversations`. Read or delete one with
-`GET /v1/conversations/{id}` and `DELETE /v1/conversations/{id}`. Send a turn
-with `POST /v1/conversations/{id}/turns` and the same JSON prompt body and SSE
-event contract as `/v1/ask`.
-
-Only the JWT identity that created a conversation can access it. A second turn
-on the same conversation is rejected with `conversation_busy`. Successful
-turns extend the configured expiry; failed, canceled, and interrupted turns do
-not enter future model context.
-
-The [interactive om client guide](docs/om-ai.md) documents how to create,
-resume, inspect, and delete these conversations from the command line.
+Conversations are stored in local SQLite and isolated by the verified token
+issuer and subject. The first successful prompt provides the default title,
+which can later be changed without altering the immutable conversation ID.
+Successful turns extend expiry; failed or interrupted turns are not added to
+future model context.
 
 ## Operational audit
 
@@ -275,3 +269,15 @@ MCP variables above together with the generic LLM variables, then running:
 go test -tags=integration ./internal/agent
 go test -tags=integration ./internal/api
 ```
+
+## License
+
+See the LICENSE file.
+
+## Project Status
+
+This project is currently in development. Feedback, issues, and contributions are welcome.
+
+For questions or discussion, you can contact me on LinkedIn:
+
+https://fr.linkedin.com/in/hugo-brenet-49b200202
