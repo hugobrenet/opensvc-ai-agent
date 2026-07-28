@@ -105,6 +105,11 @@ Prompts are read one line at a time. A successful turn is stored by the agent
 and becomes context for later turns. The client requests a fresh short-lived
 access token for conversation creation or resume and for every prompt.
 
+After the first successful turn, the agent derives a title from that prompt.
+Whitespace is normalized and titles longer than 80 characters are truncated.
+This is deterministic and does not trigger an additional LLM request. Failed,
+canceled, or timed-out first turns do not set a title.
+
 The interactive controls are:
 
 | Input | Behavior |
@@ -127,15 +132,40 @@ it was deleted or expired.
 
 ## Resume a conversation
 
-Copy the ID printed when the conversation is created, or obtain it with
-`om ai list`, then pass it to `chat`:
+Use the interactive selector to resume an existing conversation:
+
+```bash
+om ai chat --resume
+```
+
+Conversations are shown with their title, last update age, and a shortened ID:
+
+```text
+Select a conversation:
+
+  1. Redis availability  updated 2 minutes ago  1d8f521a
+  2. Cluster health review  updated 3 days ago  a93c740e
+
+Conversation [1]:
+```
+
+Enter a number, or press Enter to select the first conversation. The first
+entry is the most recently updated one. `exit`, `quit`, or `Ctrl+D` leaves the
+selector without opening a conversation. `Ctrl+C` returns to the selection
+prompt.
+
+The shortened ID is displayed only to help distinguish duplicate titles. The
+agent still opens the conversation through its complete immutable ID.
+
+For scripts, or when the ID is already known, pass it directly to `chat`:
 
 ```bash
 om ai chat 1d8f521a6df5ab128d264d88244c229c
 ```
 
 Conversation content is loaded by the agent. The client does not maintain a
-history file or local conversation cache.
+history file or local conversation cache. A conversation ID and `--resume`
+cannot be used together.
 
 ## List conversations
 
@@ -145,8 +175,10 @@ List the active conversations owned by the authenticated OpenSVC identity:
 om ai list
 ```
 
-The default table contains the ID, creation time, last update time, expiry time,
-and stored byte count. Conversations are ordered by their most recent update.
+The default table contains the title, immutable ID, creation time, last update
+time, expiry time, and stored byte count. Conversations are ordered by their
+most recent update. A conversation without a successful first turn is shown as
+`Untitled conversation`.
 
 Use JSON when the result is consumed by another command:
 
@@ -165,6 +197,19 @@ om ai show 1d8f521a6df5ab128d264d88244c229c --output json
 
 The command returns metadata only. The API intentionally does not expose stored
 prompts, model responses, tool arguments, or tool results.
+
+## Rename a conversation
+
+Assign a more useful title to an owned conversation:
+
+```bash
+om ai rename 1d8f521a6df5ab128d264d88244c229c "Redis incident review"
+```
+
+The command returns the updated metadata. Titles are normalized, limited to 80
+characters, and do not have to be unique. A manually assigned title is not
+replaced by later prompts. Renaming changes metadata only; the immutable ID and
+stored conversation history remain unchanged.
 
 ## Delete a conversation
 
@@ -207,9 +252,9 @@ may require `sudo om ai ...`.
 
 ### Conversation not found
 
-Check the ID with `om ai list`. A missing, deleted, expired, or foreign-owned
-conversation cannot be resumed. Foreign ownership is deliberately reported as
-not found.
+Use `om ai chat --resume` to select an active conversation, or check the full ID
+with `om ai list`. A missing, deleted, expired, or foreign-owned conversation
+cannot be resumed. Foreign ownership is deliberately reported as not found.
 
 ### Conversation busy
 
