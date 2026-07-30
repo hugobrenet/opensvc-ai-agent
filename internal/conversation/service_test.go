@@ -58,6 +58,43 @@ func TestServiceCompletesTurnBeforeEmittingCompletion(t *testing.T) {
 	}
 }
 
+func TestServiceKeepsCommittedTurnWhenCompletionDeliveryFails(t *testing.T) {
+	store := newServiceTestStore()
+	runner := turnRunnerFunc(func(_ context.Context, _ []llm.Message, prompt string, emit agent.EmitFunc) (agent.TurnResult, error) {
+		if err := emit(agent.Event{Type: agent.EventTextDelta, TextDelta: "committed answer", Iteration: 1}); err != nil {
+			return agent.TurnResult{}, err
+		}
+		if err := emit(agent.Event{Type: agent.EventCompleted, FinishReason: llm.FinishReasonCompleted, Iteration: 1}); err != nil {
+			return agent.TurnResult{}, err
+		}
+		return agent.TurnResult{Messages: []llm.Message{
+			{Role: llm.RoleUser, Text: prompt},
+			{Role: llm.RoleAssistant, Text: "committed answer"},
+		}, FinishReason: llm.FinishReasonCompleted}, nil
+	})
+	service := newTestService(t, store, runner)
+	execution, err := service.PrepareTurn(t.Context(), serviceTestIdentity(), store.item.ID, "status now")
+	if err != nil {
+		t.Fatalf("prepare turn: %v", err)
+	}
+	deliveryErr := errors.New("client disconnected before completion")
+	err = execution.Run(t.Context(), func(event agent.Event) error {
+		if event.Type == agent.EventCompleted {
+			return deliveryErr
+		}
+		return nil
+	})
+	if !errors.Is(err, deliveryErr) {
+		t.Fatalf("run turn error = %v, want completion delivery error", err)
+	}
+	if !store.completed || store.failed {
+		t.Fatalf("completed=%t failed=%t", store.completed, store.failed)
+	}
+	if len(store.completedMessages) != 2 || store.completedMessages[0].Text != "status now" || store.completedMessages[1].Text != "committed answer" {
+		t.Fatalf("committed messages = %#v", store.completedMessages)
+	}
+}
+
 func TestServiceFailedTurnDoesNotPersistPartialMessages(t *testing.T) {
 	store := newServiceTestStore()
 	runner := turnRunnerFunc(func(_ context.Context, _ []llm.Message, _ string, emit agent.EmitFunc) (agent.TurnResult, error) {
