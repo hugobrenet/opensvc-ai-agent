@@ -63,7 +63,8 @@ active project step:
      a fresh short-lived OpenSVC JWT for every turn.
    - Make Ctrl+C cancel only the active turn; support clean EOF and explicit
      exit, with no client-side conversation persistence.
-6. Conversation hardening and end-to-end validation.
+6. Conversation hardening and end-to-end validation. Complete in the local lab
+   on 2026-07-30.
    - Test ownership isolation, concurrent turns, expiry, deletion, migration,
      crash recovery, database failures, bounded context, SSE disconnects, and
      graceful shutdown with active conversations.
@@ -81,10 +82,87 @@ active project step:
    - Design `ox ai` and an optional authenticated OpenSVC daemon proxy without
      exposing the agent or MCP listener to the network.
 
-The next incomplete step is step 5. The OpenSVC JWT belongs only to the
+The next incomplete step is step 7. The OpenSVC JWT belongs only to the
 authenticated agent, MCP, and daemon path. It must never enter an LLM request,
 LLM context, persisted conversation, prompt, tool argument, provider
 configuration, or audit record.
+
+## Step 6 robustness validation
+
+The step 6 audit was executed on 2026-07-30 in a disposable single-node WSL
+lab using the real OpenSVC daemon, the real Streamable HTTP MCP server, a live
+Responses-compatible LLM provider, the local agent, and the `om ai` client.
+The daemon version was OpenSVC `3.0.0-rc21`. Root and guest OpenSVC identities
+were exercised. No provider credential, JWT, private key, or raw sensitive
+payload was written into this repository or printed during the checks.
+
+The following scenarios passed:
+
+1. A persistent two-turn conversation called MCP on the first turn, reused the
+   stored provider-neutral history without another tool call on the second
+   turn, generated a title, and extended its expiry.
+2. A graceful agent restart preserved the conversation and restored its model
+   context from SQLite without an MCP call.
+3. Two simultaneous turns on one conversation admitted exactly one turn and
+   rejected the other with HTTP 409 `conversation_busy`; a later turn proved
+   that the lock was released.
+4. Ctrl+C during an active SSE response canceled only that turn. SQLite stored
+   a `canceled` turn with `request_canceled`, zero messages, and none of the
+   streamed partial prompt or response marker.
+5. Terminating MCP after session creation but before a requested tool call
+   produced a bounded `agent_failed` response and a failed turn with zero
+   messages. Restarting MCP allowed the same conversation to complete a new
+   tool-backed turn.
+6. A forced LLM deadline produced `request_timeout`; an unreachable provider
+   endpoint produced `agent_failed`. Neither failure stored partial messages,
+   and restoring the provider allowed the conversation to continue.
+7. SIGINT during an active turn stopped admission, drained the request within
+   the configured shutdown deadline, committed the complete turn, and exited
+   cleanly.
+8. SIGKILL during streaming left one `running` turn with zero messages. Startup
+   recovery changed it to `interrupted` with `agent_restarted`; the partial
+   marker remained absent and a subsequent turn completed normally.
+9. Deletion during a running turn returned `conversation_busy`. Expired
+   conversations with running turns were retained but hidden from listings. A
+   successful turn renewed expiry, and a later inactive expiry was deleted with
+   its turns and messages by cascade.
+10. Conversation ownership was isolated in both directions between root and a
+    guest subject. The guest could use `get_daemon_identity`; the daemon denied
+    `refresh_instance_status`, and the bounded functional tool error allowed
+    the model to explain the authorization failure without weakening grants.
+11. A held SQLite write lock returned the stable `conversation_failed` API
+    error without exposing SQL details, and normal operation resumed after the
+    lock was released. Tests also passed for v1-to-v2 migration, unsafe
+    permissions, symlinks, newer schemas, corrupt databases and rows, turn and
+    byte limits, and atomic rejection of invalid or oversized completions.
+12. Live marker scans found no OpenSVC JWT, provider token, one-shot prompt,
+    tool argument, tool result, or model text in structured audit output. JWTs
+    and provider credentials were absent from SQLite, and one-shot prompts were
+    not persisted. The dedicated audit tests also passed without cache.
+13. A deterministic completion-delivery failure proved that SQLite commits the
+    completed turn before the terminal SSE event. The commit remains valid when
+    delivery fails. Repeating the same prompt currently creates another turn,
+    because the API has no client-supplied idempotency key.
+
+After the added completion-delivery regression test, `go fmt ./...`,
+`go test ./...`, `go vet ./...`, the agent daemon build, and `git diff --check` all
+passed. The MCP suite, including its real Streamable HTTP binary tests, and the
+`om3` AI client tests also passed during this audit.
+
+No confirmed credential leak, ownership bypass, partial-history replay,
+conversation corruption, or authorization bypass was found. The following
+limitations remain explicit and must not be described as solved:
+
+- loss of the terminal SSE event after commit is ambiguous to the client, and
+  retrying can duplicate a logical turn; adding idempotency requires an
+  explicit API and persistence design;
+- one exploratory multi-tool prompt produced a transient `agent_failed` after
+  three successful tool calls and was not reproduced by the controlled MCP and
+  LLM failure tests; retain this observation for provider/adapter diagnostics;
+- the audit covered one single-node lab and one live provider, not long-running
+  soak, load, fuzz, multi-node partition, or independent penetration testing;
+- systemd hardening and permissioned Unix sockets remain step 7, so the current
+  loopback HTTP deployment is not the final production deployment model.
 
 ## Technology
 
