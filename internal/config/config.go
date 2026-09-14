@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,7 +21,6 @@ const (
 
 type Config struct {
 	SocketPath        string
-	ListenAddress     string
 	MaxConcurrentAsks int
 	ShutdownTimeout   time.Duration
 }
@@ -32,29 +30,14 @@ func Load() (Config, error) {
 }
 
 func load(getenv func(string) string) (Config, error) {
-	listenAddress := strings.TrimSpace(getenv("OPENSVC_AI_LISTEN_ADDRESS"))
 	socketPath := strings.TrimSpace(getenv("OPENSVC_AI_SOCKET_PATH"))
-	if listenAddress != "" {
-		if socketPath != "" {
-			return Config{}, fmt.Errorf("OPENSVC_AI_LISTEN_ADDRESS and OPENSVC_AI_SOCKET_PATH are mutually exclusive")
-		}
-		host, _, err := net.SplitHostPort(listenAddress)
-		if err != nil {
-			return Config{}, fmt.Errorf("parse OPENSVC_AI_LISTEN_ADDRESS: %w", err)
-		}
-		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
-			return Config{}, fmt.Errorf("OPENSVC_AI_LISTEN_ADDRESS must use a loopback IP")
-		}
-	} else {
-		if socketPath == "" {
-			socketPath = DefaultSocketPath
-		}
-		var err error
-		socketPath, err = cleanUnixSocketPath(socketPath)
-		if err != nil {
-			return Config{}, fmt.Errorf("parse OPENSVC_AI_SOCKET_PATH: %w", err)
-		}
+	if socketPath == "" {
+		socketPath = DefaultSocketPath
+	}
+	var err error
+	socketPath, err = cleanUnixSocketPath(socketPath)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse OPENSVC_AI_SOCKET_PATH: %w", err)
 	}
 	maxConcurrentAsks := DefaultMaxConcurrentAsks
 	if value := strings.TrimSpace(getenv("OPENSVC_AI_MAX_CONCURRENT_ASKS")); value != "" {
@@ -83,7 +66,6 @@ func load(getenv func(string) string) (Config, error) {
 	}
 	return Config{
 		SocketPath:        socketPath,
-		ListenAddress:     listenAddress,
 		MaxConcurrentAsks: maxConcurrentAsks,
 		ShutdownTimeout:   shutdownTimeout,
 	}, nil

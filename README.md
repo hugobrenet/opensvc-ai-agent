@@ -37,8 +37,7 @@ provider name.
 
 | Variable | Description |
 | --- | --- |
-| `OPENSVC_AI_SOCKET_PATH` | Unix socket path, default `/run/opensvc-ai-agent/agent.sock`. Mutually exclusive with `OPENSVC_AI_LISTEN_ADDRESS`. |
-| `OPENSVC_AI_LISTEN_ADDRESS` | Temporary TCP fallback. When set, it must be a loopback IP and disables Unix socket mode. |
+| `OPENSVC_AI_SOCKET_PATH` | Unix socket path, default `/run/opensvc-ai-agent/agent.sock`. |
 | `OPENSVC_AI_MAX_CONCURRENT_ASKS` | Process-wide concurrent ask limit, default `4`, maximum `128`. |
 | `OPENSVC_AI_SHUTDOWN_TIMEOUT` | Maximum graceful shutdown drain time, default `30s`, accepted range `1s` to `5m`. |
 
@@ -152,17 +151,9 @@ OPENSVC_AI_SOCKET_PATH="$runtime_directory/agent.sock" \
   go run ./cmd/opensvc-ai-agentd
 ```
 
-To roll back temporarily to the former TCP listener, set its loopback address:
-
-```bash
-OPENSVC_AI_LISTEN_ADDRESS=127.0.0.1:8091 \
-  go run ./cmd/opensvc-ai-agentd
-```
-
-`OPENSVC_AI_SOCKET_PATH` and `OPENSVC_AI_LISTEN_ADDRESS` are mutually
-exclusive. Non-loopback TCP addresses are rejected while server-side TLS is
-unavailable. Both transports serve the same HTTP routes and SSE contract. The
-HTTP server limits request headers to 64 KiB. On `SIGINT` or `SIGTERM`, it stops
+The agent exposes its HTTP routes and SSE contract only through the Unix
+socket. The HTTP server limits request headers to 64 KiB. On `SIGINT` or
+`SIGTERM`, it stops
 accepting new requests and lets active asks finish for at most
 `OPENSVC_AI_SHUTDOWN_TIMEOUT`. Once that deadline expires, remaining
 connections are closed so cancellation propagates to active LLM and MCP

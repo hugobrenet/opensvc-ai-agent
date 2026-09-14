@@ -110,7 +110,7 @@ func main() {
 		log.Fatalf("create HTTP API: %v", err)
 	}
 
-	listener, description, err := listenHTTPAPI(processConfig)
+	listener, err := listenUnixSocket(processConfig.SocketPath)
 	if err != nil {
 		_ = conversationStore.Close()
 		log.Fatalf("listen for HTTP API: %v", err)
@@ -123,7 +123,7 @@ func main() {
 
 	signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	log.Printf("opensvc-ai-agentd listening on %s", description)
+	log.Printf("opensvc-ai-agentd listening on unix://%s", processConfig.SocketPath)
 	select {
 	case err := <-serveErrors:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -140,21 +140,6 @@ func main() {
 			log.Printf("serve HTTP API during shutdown: %v", err)
 		}
 	}
-}
-
-func listenHTTPAPI(processConfig config.Config) (net.Listener, string, error) {
-	if processConfig.ListenAddress != "" {
-		listener, err := net.Listen("tcp", processConfig.ListenAddress)
-		if err != nil {
-			return nil, "", fmt.Errorf("listen on TCP loopback %s: %w", processConfig.ListenAddress, err)
-		}
-		return listener, "http://" + listener.Addr().String(), nil
-	}
-	listener, err := listenUnixSocket(processConfig.SocketPath)
-	if err != nil {
-		return nil, "", err
-	}
-	return listener, "unix://" + processConfig.SocketPath, nil
 }
 
 func listenUnixSocket(path string) (*net.UnixListener, error) {

@@ -38,9 +38,6 @@ func TestLoadUnixSocket(t *testing.T) {
 			if config.SocketPath != test.want {
 				t.Errorf("got socket path %q, want %q", config.SocketPath, test.want)
 			}
-			if config.ListenAddress != "" {
-				t.Errorf("got listen address %q in Unix socket mode", config.ListenAddress)
-			}
 			if config.MaxConcurrentAsks != DefaultMaxConcurrentAsks {
 				t.Errorf("got max concurrent asks %d, want %d", config.MaxConcurrentAsks, DefaultMaxConcurrentAsks)
 			}
@@ -48,57 +45,6 @@ func TestLoadUnixSocket(t *testing.T) {
 				t.Errorf("got shutdown timeout %s, want %s", config.ShutdownTimeout, DefaultShutdownTimeout)
 			}
 		})
-	}
-}
-
-func TestLoadTCPFallback(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		value   string
-		wantErr bool
-	}{
-		{name: "ipv4 loopback", value: "127.0.0.2:9000"},
-		{name: "ipv6 loopback", value: "[::1]:9000"},
-		{name: "non loopback", value: "0.0.0.0:8090", wantErr: true},
-		{name: "hostname", value: "localhost:8090", wantErr: true},
-		{name: "invalid", value: "127.0.0.1", wantErr: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			config, err := load(func(key string) string {
-				if key == "OPENSVC_AI_LISTEN_ADDRESS" {
-					return test.value
-				}
-				return ""
-			})
-			if test.wantErr {
-				if err == nil {
-					t.Fatalf("load succeeded with %+v, want error", config)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("load config: %v", err)
-			}
-			if config.ListenAddress != test.value || config.SocketPath != "" {
-				t.Fatalf("got listener configuration %+v", config)
-			}
-		})
-	}
-}
-
-func TestLoadRejectsAmbiguousListener(t *testing.T) {
-	_, err := load(func(key string) string {
-		switch key {
-		case "OPENSVC_AI_LISTEN_ADDRESS":
-			return "127.0.0.1:8090"
-		case "OPENSVC_AI_SOCKET_PATH":
-			return DefaultSocketPath
-		default:
-			return ""
-		}
-	})
-	if err == nil {
-		t.Fatal("load accepted both Unix socket and TCP listener configuration")
 	}
 }
 

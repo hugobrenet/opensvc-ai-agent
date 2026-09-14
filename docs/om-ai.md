@@ -28,18 +28,8 @@ non-default local Unix socket, set:
 export OPENSVC_AI_AGENT_SOCKET=/path/to/agent.sock
 ```
 
-The path must be absolute and fit the Linux Unix socket address limit. To use
-the temporary TCP fallback for local development instead, set a loopback URL:
-
-```bash
-export OPENSVC_AI_AGENT_URL=http://127.0.0.1:8091
-```
-
-The socket and URL variables are mutually exclusive. The URL override must use
-an HTTP or HTTPS loopback IP. There is intentionally no public `--agent-url`
-flag, and remote agent URLs are rejected. HTTP routes, JWT authentication,
-timeouts, redirect rejection, and SSE processing are identical on both
-transports.
+The path must be absolute and fit the Linux Unix socket address limit. There is
+intentionally no public `--agent-url` flag.
 
 ## Prerequisites
 
@@ -252,12 +242,11 @@ Verify the local socket, its permissions, and the health endpoint:
 ```bash
 ls -l /run/opensvc-ai-agent/agent.sock
 curl --unix-socket /run/opensvc-ai-agent/agent.sock http://localhost/health
-printf 'socket=%s tcp_fallback=%s\n' "$OPENSVC_AI_AGENT_SOCKET" "$OPENSVC_AI_AGENT_URL"
+printf 'socket=%s\n' "$OPENSVC_AI_AGENT_SOCKET"
 ```
 
 An absent socket reports a connection error. `Permission denied` means that
-the user running `om` is not allowed by the socket owner, group, or mode. During
-a TCP rollback, verify the configured loopback URL with ordinary `curl`.
+the user running `om` is not allowed by the socket owner, group, or mode.
 
 ### Local daemon permission denied
 

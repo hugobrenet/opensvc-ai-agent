@@ -75,9 +75,8 @@ active project step:
      OpenSVC daemon depend on either service.
    - Run under dedicated unprivileged users, protect state and credentials, and
      apply systemd filesystem, privilege, and resource hardening.
-   - The `om ai` to agent link uses a permissioned Unix socket by default while
-     preserving its HTTP contracts; the loopback TCP transport remains an
-     explicit deployment fallback.
+   - The `om ai` to agent link uses a permissioned Unix socket while preserving
+     its HTTP contracts.
    - Replace the agent to MCP loopback listener with a permissioned Unix socket
      after the first link is validated in the lab.
 8. Remote OpenSVC client integration. Deferred until local interactive use is

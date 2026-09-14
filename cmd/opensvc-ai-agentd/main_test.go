@@ -12,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/hugobrenet/opensvc-ai-agent/internal/config"
 )
 
 func TestNewHTTPServerHardening(t *testing.T) {
@@ -23,17 +21,6 @@ func TestNewHTTPServerHardening(t *testing.T) {
 	}
 	if server.ReadHeaderTimeout <= 0 || server.ReadTimeout <= 0 || server.IdleTimeout <= 0 {
 		t.Fatalf("server timeouts are not all positive: %+v", server)
-	}
-}
-
-func TestListenHTTPAPIUsesTCPFallback(t *testing.T) {
-	listener, description, err := listenHTTPAPI(config.Config{ListenAddress: "127.0.0.1:0"})
-	if err != nil {
-		t.Fatalf("listen for HTTP API: %v", err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	if listener.Addr().Network() != "tcp" || !strings.HasPrefix(description, "http://127.0.0.1:") {
-		t.Fatalf("listener = %s, description = %q", listener.Addr().Network(), description)
 	}
 }
 
