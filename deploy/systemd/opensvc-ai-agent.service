@@ -1,0 +1,39 @@
+[Unit]
+Description=OpenSVC AI agent
+After=network-online.target opensvc-daemon-mcp.service
+Wants=network-online.target
+Requires=opensvc-daemon-mcp.service
+
+[Service]
+Type=simple
+User=opensvc-ai
+Group=opensvc-ai
+Environment=OPENSVC_AI_SOCKET_PATH=/run/opensvc-ai-agent/agent.sock
+Environment=OPENSVC_AI_MCP_ENDPOINT=http://127.0.0.1:8080/mcp
+Environment=OPENSVC_AI_JWT_VERIFY_KEY_FILE=/etc/opensvc-ai/cluster-ca.pem
+Environment=OPENSVC_AI_CONVERSATION_DB_PATH=/var/lib/opensvc-ai-agent/conversations.db
+EnvironmentFile=/etc/opensvc-ai/agent-llm.env
+ExecStart=/usr/local/libexec/opensvc-ai-agentd
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=35s
+RuntimeDirectory=opensvc-ai-agent
+RuntimeDirectoryMode=0750
+StateDirectory=opensvc-ai-agent
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
