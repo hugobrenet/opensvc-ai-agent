@@ -70,13 +70,16 @@ active project step:
      graceful shutdown with active conversations.
    - Run a real multi-turn workflow through LLM, MCP, and the OpenSVC daemon and
      verify restart and resume behavior.
-7. Local service deployment and Unix sockets.
+7. Local service deployment and Unix sockets. In progress.
    - Version independent systemd units for the agent and MCP without making the
      OpenSVC daemon depend on either service.
    - Run under dedicated unprivileged users, protect state and credentials, and
      apply systemd filesystem, privilege, and resource hardening.
-   - Replace agent and MCP loopback listeners with permissioned Unix sockets
-     while preserving their HTTP contracts.
+   - The `om ai` to agent link uses a permissioned Unix socket by default while
+     preserving its HTTP contracts; the loopback TCP transport remains an
+     explicit deployment fallback.
+   - Replace the agent to MCP loopback listener with a permissioned Unix socket
+     after the first link is validated in the lab.
 8. Remote OpenSVC client integration. Deferred until local interactive use is
    complete.
    - Design `ox ai` and an optional authenticated OpenSVC daemon proxy without
@@ -321,8 +324,8 @@ protocol name, never by provider or model name.
 
 ## Security invariants
 
-- Bind only to a loopback address until server-side TLS or a Unix socket is
-  implemented.
+- Bind TCP only to a loopback address. The default local agent listener is a
+  permissioned Unix socket.
 - Never place JWTs, provider API keys, passwords, or private keys in prompts,
   request bodies, logs, errors, or test fixtures.
 - Future OpenSVC JWTs must remain request-scoped and must never be stored in a

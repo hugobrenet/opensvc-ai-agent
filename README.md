@@ -37,7 +37,8 @@ provider name.
 
 | Variable | Description |
 | --- | --- |
-| `OPENSVC_AI_LISTEN_ADDRESS` | Loopback listen address, default `127.0.0.1:8090`. |
+| `OPENSVC_AI_SOCKET_PATH` | Unix socket path, default `/run/opensvc-ai-agent/agent.sock`. Mutually exclusive with `OPENSVC_AI_LISTEN_ADDRESS`. |
+| `OPENSVC_AI_LISTEN_ADDRESS` | Temporary TCP fallback. When set, it must be a loopback IP and disables Unix socket mode. |
 | `OPENSVC_AI_MAX_CONCURRENT_ASKS` | Process-wide concurrent ask limit, default `4`, maximum `128`. |
 | `OPENSVC_AI_SHUTDOWN_TIMEOUT` | Maximum graceful shutdown drain time, default `30s`, accepted range `1s` to `5m`. |
 
@@ -135,15 +136,32 @@ The daemon validates the LLM, agent, and MCP configuration at startup. Provider
 tokens remain in their environment variable and are not retained in process
 configuration.
 
-The daemon listens on `127.0.0.1:8090` by default. Override the loopback
-address with:
+The daemon listens on `/run/opensvc-ai-agent/agent.sock` by default. The parent
+directory must already exist; systemd should create it with
+`RuntimeDirectory=opensvc-ai-agent`. The daemon refuses relative or oversized
+paths, refuses to replace non-socket files, removes a socket only after proving
+that it is stale, sets its mode to `0660`, and removes it when the listener
+closes.
+
+For an unprivileged development run, select a socket in an owner-only temporary
+directory:
+
+```bash
+runtime_directory="$(mktemp -d)"
+OPENSVC_AI_SOCKET_PATH="$runtime_directory/agent.sock" \
+  go run ./cmd/opensvc-ai-agentd
+```
+
+To roll back temporarily to the former TCP listener, set its loopback address:
 
 ```bash
 OPENSVC_AI_LISTEN_ADDRESS=127.0.0.1:8091 \
   go run ./cmd/opensvc-ai-agentd
 ```
 
-Non-loopback addresses are rejected while server-side TLS is unavailable. The
+`OPENSVC_AI_SOCKET_PATH` and `OPENSVC_AI_LISTEN_ADDRESS` are mutually
+exclusive. Non-loopback TCP addresses are rejected while server-side TLS is
+unavailable. Both transports serve the same HTTP routes and SSE contract. The
 HTTP server limits request headers to 64 KiB. On `SIGINT` or `SIGTERM`, it stops
 accepting new requests and lets active asks finish for at most
 `OPENSVC_AI_SHUTDOWN_TIMEOUT`. Once that deadline expires, remaining
@@ -153,7 +171,7 @@ operations.
 ## Health
 
 ```bash
-curl http://127.0.0.1:8090/health
+curl --unix-socket /run/opensvc-ai-agent/agent.sock http://localhost/health
 ```
 
 Expected response:
@@ -199,7 +217,8 @@ The local API supports both one-shot requests and persistent conversations:
 For example, submit a one-shot prompt with:
 
 ```bash
-curl -N http://127.0.0.1:8090/v1/ask \
+curl --unix-socket /run/opensvc-ai-agent/agent.sock \
+  -N http://localhost/v1/ask \
   -H "Authorization: Bearer $OPENSVC_JWT" \
   -H "Content-Type: application/json" \
   -d '{"prompt":"Assess the health of my cluster."}'

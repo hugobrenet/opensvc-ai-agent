@@ -21,15 +21,25 @@ The agent verifies the token, delegates it to MCP for tool calls, and binds
 persistent conversations to its issuer and subject. The client never stores
 the token, messages, or conversation state.
 
-The agent listens on `http://127.0.0.1:8090` by default. For a non-default local
-development deployment, set a loopback URL:
+The client connects to `/run/opensvc-ai-agent/agent.sock` by default. For a
+non-default local Unix socket, set:
+
+```bash
+export OPENSVC_AI_AGENT_SOCKET=/path/to/agent.sock
+```
+
+The path must be absolute and fit the Linux Unix socket address limit. To use
+the temporary TCP fallback for local development instead, set a loopback URL:
 
 ```bash
 export OPENSVC_AI_AGENT_URL=http://127.0.0.1:8091
 ```
 
-The override must use an HTTP or HTTPS loopback IP. There is intentionally no
-public `--agent-url` flag, and remote agent URLs are rejected.
+The socket and URL variables are mutually exclusive. The URL override must use
+an HTTP or HTTPS loopback IP. There is intentionally no public `--agent-url`
+flag, and remote agent URLs are rejected. HTTP routes, JWT authentication,
+timeouts, redirect rejection, and SSE processing are identical on both
+transports.
 
 ## Prerequisites
 
@@ -41,7 +51,7 @@ Before using the client:
 4. Verify the agent health endpoint:
 
    ```bash
-   curl http://127.0.0.1:8090/health
+   curl --unix-socket /run/opensvc-ai-agent/agent.sock http://localhost/health
    ```
 
 5. Verify the available commands:
@@ -237,12 +247,17 @@ the client.
 
 ### Agent connection refused
 
-Verify the local health endpoint and the configured loopback URL:
+Verify the local socket, its permissions, and the health endpoint:
 
 ```bash
-curl http://127.0.0.1:8090/health
-printf '%s\n' "$OPENSVC_AI_AGENT_URL"
+ls -l /run/opensvc-ai-agent/agent.sock
+curl --unix-socket /run/opensvc-ai-agent/agent.sock http://localhost/health
+printf 'socket=%s tcp_fallback=%s\n' "$OPENSVC_AI_AGENT_SOCKET" "$OPENSVC_AI_AGENT_URL"
 ```
+
+An absent socket reports a connection error. `Permission denied` means that
+the user running `om` is not allowed by the socket owner, group, or mode. During
+a TCP rollback, verify the configured loopback URL with ordinary `curl`.
 
 ### Local daemon permission denied
 

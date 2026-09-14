@@ -4,10 +4,16 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/hugobrenet/opensvc-ai-agent/internal/config"
 )
 
 func TestNewHTTPServerHardening(t *testing.T) {
@@ -17,6 +23,86 @@ func TestNewHTTPServerHardening(t *testing.T) {
 	}
 	if server.ReadHeaderTimeout <= 0 || server.ReadTimeout <= 0 || server.IdleTimeout <= 0 {
 		t.Fatalf("server timeouts are not all positive: %+v", server)
+	}
+}
+
+func TestListenHTTPAPIUsesTCPFallback(t *testing.T) {
+	listener, description, err := listenHTTPAPI(config.Config{ListenAddress: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("listen for HTTP API: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	if listener.Addr().Network() != "tcp" || !strings.HasPrefix(description, "http://127.0.0.1:") {
+		t.Fatalf("listener = %s, description = %q", listener.Addr().Network(), description)
+	}
+}
+
+func TestListenUnixSocketCreatesPermissionedSocketAndCleansUp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.sock")
+	listener, err := listenUnixSocket(path)
+	if err != nil {
+		t.Fatalf("listen on Unix socket: %v", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("stat Unix socket: %v", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("path mode %s is not a socket", info.Mode())
+	}
+	if got := info.Mode().Perm(); got != unixSocketMode {
+		t.Fatalf("socket mode = %04o, want %04o", got, unixSocketMode)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close Unix socket: %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("socket remains after listener close: %v", err)
+	}
+}
+
+func TestListenUnixSocketReplacesOnlyStaleSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.sock")
+	stale, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatalf("create stale Unix socket: %v", err)
+	}
+	stale.SetUnlinkOnClose(false)
+	if err := stale.Close(); err != nil {
+		t.Fatalf("close stale Unix socket: %v", err)
+	}
+
+	listener, err := listenUnixSocket(path)
+	if err != nil {
+		t.Fatalf("replace stale Unix socket: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+}
+
+func TestListenUnixSocketRefusesActiveSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.sock")
+	active, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("create active Unix socket: %v", err)
+	}
+	t.Cleanup(func() { _ = active.Close() })
+
+	if _, err := listenUnixSocket(path); err == nil || !strings.Contains(err.Error(), "already accepting connections") {
+		t.Fatalf("listen error = %v", err)
+	}
+}
+
+func TestListenUnixSocketRefusesNonSocketPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.sock")
+	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("create ordinary file: %v", err)
+	}
+	if _, err := listenUnixSocket(path); err == nil || !strings.Contains(err.Error(), "refuse to remove non-socket") {
+		t.Fatalf("listen error = %v", err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != "keep" {
+		t.Fatalf("ordinary file changed: contents=%q error=%v", contents, err)
 	}
 }
 

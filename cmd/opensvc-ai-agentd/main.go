@@ -23,7 +23,11 @@ import (
 	"github.com/hugobrenet/opensvc-ai-agent/internal/mcpclient"
 )
 
-const maxHTTPHeaderBytes = 64 << 10
+const (
+	maxHTTPHeaderBytes = 64 << 10
+	unixSocketMode     = 0o660
+	socketProbeTimeout = 100 * time.Millisecond
+)
 
 func main() {
 	processConfig, err := config.Load()
@@ -106,12 +110,12 @@ func main() {
 		log.Fatalf("create HTTP API: %v", err)
 	}
 
-	server := newHTTPServer(processConfig.ListenAddress, handler)
-	listener, err := net.Listen("tcp", processConfig.ListenAddress)
+	listener, description, err := listenHTTPAPI(processConfig)
 	if err != nil {
 		_ = conversationStore.Close()
 		log.Fatalf("listen for HTTP API: %v", err)
 	}
+	server := newHTTPServer(listener.Addr().String(), handler)
 	serveErrors := make(chan error, 1)
 	go func() {
 		serveErrors <- server.Serve(listener)
@@ -119,7 +123,7 @@ func main() {
 
 	signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	log.Printf("opensvc-ai-agentd listening on http://%s", processConfig.ListenAddress)
+	log.Printf("opensvc-ai-agentd listening on %s", description)
 	select {
 	case err := <-serveErrors:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -136,6 +140,77 @@ func main() {
 			log.Printf("serve HTTP API during shutdown: %v", err)
 		}
 	}
+}
+
+func listenHTTPAPI(processConfig config.Config) (net.Listener, string, error) {
+	if processConfig.ListenAddress != "" {
+		listener, err := net.Listen("tcp", processConfig.ListenAddress)
+		if err != nil {
+			return nil, "", fmt.Errorf("listen on TCP loopback %s: %w", processConfig.ListenAddress, err)
+		}
+		return listener, "http://" + listener.Addr().String(), nil
+	}
+	listener, err := listenUnixSocket(processConfig.SocketPath)
+	if err != nil {
+		return nil, "", err
+	}
+	return listener, "unix://" + processConfig.SocketPath, nil
+}
+
+func listenUnixSocket(path string) (*net.UnixListener, error) {
+	if err := removeStaleUnixSocket(path); err != nil {
+		return nil, err
+	}
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		return nil, fmt.Errorf("listen on Unix socket %s: %w", path, err)
+	}
+	listener.SetUnlinkOnClose(true)
+	if err := os.Chmod(path, unixSocketMode); err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("set Unix socket %s mode to %04o: %w", path, unixSocketMode, err)
+	}
+	return listener, nil
+}
+
+func removeStaleUnixSocket(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect Unix socket path %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refuse to remove non-socket path %s", path)
+	}
+
+	connection, probeErr := net.DialTimeout("unix", path, socketProbeTimeout)
+	if probeErr == nil {
+		_ = connection.Close()
+		return fmt.Errorf("Unix socket %s is already accepting connections", path)
+	}
+	if errors.Is(probeErr, os.ErrNotExist) {
+		return nil
+	}
+	if !errors.Is(probeErr, syscall.ECONNREFUSED) {
+		return fmt.Errorf("probe existing Unix socket %s: %w", path, probeErr)
+	}
+
+	currentInfo, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reinspect stale Unix socket %s: %w", path, err)
+	}
+	if currentInfo.Mode()&os.ModeSocket == 0 || !os.SameFile(info, currentInfo) {
+		return fmt.Errorf("Unix socket path %s changed while checking whether it was stale", path)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove stale Unix socket %s: %w", path, err)
+	}
+	return nil
 }
 
 func newHTTPServer(address string, handler http.Handler) *http.Server {
