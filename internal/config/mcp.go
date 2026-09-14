@@ -6,8 +6,10 @@ import (
 	"strings"
 )
 
+const DefaultMCPSocketPath = "/run/opensvc-daemon-mcp/mcp.sock"
+
 type MCPConfig struct {
-	Endpoint string
+	SocketPath string
 }
 
 func LoadMCP() (MCPConfig, error) {
@@ -15,9 +17,13 @@ func LoadMCP() (MCPConfig, error) {
 }
 
 func loadMCP(getenv func(string) string) (MCPConfig, error) {
-	endpoint := strings.TrimSpace(getenv("OPENSVC_AI_MCP_ENDPOINT"))
-	if endpoint == "" {
-		return MCPConfig{}, fmt.Errorf("OPENSVC_AI_MCP_ENDPOINT is required")
+	socketPath := strings.TrimSpace(getenv("OPENSVC_AI_MCP_SOCKET_PATH"))
+	if socketPath == "" {
+		socketPath = DefaultMCPSocketPath
 	}
-	return MCPConfig{Endpoint: endpoint}, nil
+	socketPath, err := cleanUnixSocketPath(socketPath)
+	if err != nil {
+		return MCPConfig{}, fmt.Errorf("parse OPENSVC_AI_MCP_SOCKET_PATH: %w", err)
+	}
+	return MCPConfig{SocketPath: socketPath}, nil
 }

@@ -77,8 +77,9 @@ active project step:
      apply systemd filesystem, privilege, and resource hardening.
    - The `om ai` to agent link uses a permissioned Unix socket while preserving
      its HTTP contracts.
-   - Replace the agent to MCP loopback listener with a permissioned Unix socket
-     after the first link is validated in the lab.
+   - The agent MCP client uses a permissioned Unix socket; complete the matching
+     listener and service changes in the MCP repository, then validate them in
+     the lab.
 8. Remote OpenSVC client integration. Deferred until local interactive use is
    complete.
    - Design `ox ai` and an optional authenticated OpenSVC daemon proxy without
@@ -323,8 +324,9 @@ protocol name, never by provider or model name.
 
 ## Security invariants
 
-- Bind TCP only to a loopback address. The default local agent listener is a
-  permissioned Unix socket.
+- The local agent listener and its MCP client transport use permissioned Unix
+  sockets. Keep unavoidable TCP destinations constrained by their own trust
+  boundary and transport policy.
 - Never place JWTs, provider API keys, passwords, or private keys in prompts,
   request bodies, logs, errors, or test fixtures.
 - Future OpenSVC JWTs must remain request-scoped and must never be stored in a
@@ -394,8 +396,8 @@ Use `httptest` for API behavior. Normal tests must not require a live LLM,
 OpenSVC daemon, MCP server, network connection, or secret.
 
 The `integration` build tag may be used for explicit tests against a running
-MCP server. Such tests must read their endpoint and JWT from the environment,
-skip when either is absent, and never print the JWT.
+MCP server. Such tests must read its Unix socket path and JWT from the
+environment, skip when either is absent, and never print the JWT.
 
 LLM adapter integration tests use the same build tag and generic
 `OPENSVC_AI_LLM_*` environment variables. Never commit gateway URLs, model

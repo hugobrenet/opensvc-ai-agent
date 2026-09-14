@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/hugobrenet/opensvc-ai-agent/internal/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
-	clientName    = "opensvc-ai-agent"
-	clientVersion = "v0.1.0"
+	clientName           = "opensvc-ai-agent"
+	clientVersion        = "v0.1.0"
+	streamableEndpoint   = "http://localhost/mcp"
+	maximumUnixPathBytes = 107
 )
 
 // Client creates request-scoped MCP sessions. It never retains a Bearer token.
@@ -22,16 +26,28 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// New creates an MCP client for a Streamable HTTP endpoint.
-func New(endpoint string, httpClient *http.Client) (*Client, error) {
-	if err := validateEndpoint(endpoint); err != nil {
-		return nil, err
-	}
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+// New creates an MCP client that carries Streamable HTTP over a Unix socket.
+func New(socketPath string) (*Client, error) {
+	path, err := cleanUnixSocketPath(socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("parse MCP Unix socket path: %w", err)
 	}
 
-	clientCopy := *httpClient
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "unix", path)
+	}
+
+	return &Client{
+		endpoint:   streamableEndpoint,
+		httpClient: securedHTTPClient(&http.Client{Transport: transport}),
+	}, nil
+}
+
+func securedHTTPClient(base *http.Client) *http.Client {
+	clientCopy := *base
 	baseTransport := clientCopy.Transport
 	if baseTransport == nil {
 		baseTransport = http.DefaultTransport
@@ -40,8 +56,10 @@ func New(endpoint string, httpClient *http.Client) (*Client, error) {
 		base:     bearerTransport{base: baseTransport},
 		maxBytes: maxMCPResponseBodyBytes,
 	}
-
-	return &Client{endpoint: endpoint, httpClient: &clientCopy}, nil
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &clientCopy
 }
 
 // Connect initializes an MCP session using the delegated JWT in ctx.
@@ -121,29 +139,16 @@ func (t bearerTransport) RoundTrip(request *http.Request) (*http.Response, error
 	return t.base.RoundTrip(requestCopy)
 }
 
-func validateEndpoint(endpoint string) error {
-	parsed, err := url.ParseRequestURI(endpoint)
-	if err != nil {
-		return fmt.Errorf("parse MCP endpoint: %w", err)
+func cleanUnixSocketPath(value string) (string, error) {
+	path := filepath.Clean(strings.TrimSpace(value))
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("path must be absolute")
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("MCP endpoint scheme must be http or https")
+	if path == string(filepath.Separator) {
+		return "", fmt.Errorf("path must name a socket")
 	}
-	if parsed.Host == "" {
-		return fmt.Errorf("MCP endpoint host is empty")
+	if len([]byte(path)) > maximumUnixPathBytes {
+		return "", fmt.Errorf("path exceeds the Linux Unix socket limit of %d bytes", maximumUnixPathBytes)
 	}
-	if parsed.User != nil {
-		return fmt.Errorf("MCP endpoint must not contain user information")
-	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return fmt.Errorf("MCP endpoint must not contain a query or fragment")
-	}
-	if parsed.Scheme == "http" {
-		host := parsed.Hostname()
-		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
-			return fmt.Errorf("plain HTTP MCP endpoint must use a loopback IP")
-		}
-	}
-	return nil
+	return path, nil
 }

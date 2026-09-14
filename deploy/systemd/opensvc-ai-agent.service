@@ -8,8 +8,9 @@ Requires=opensvc-daemon-mcp.service
 Type=simple
 User=opensvc-ai
 Group=opensvc-ai
+SupplementaryGroups=opensvc-mcp
 Environment=OPENSVC_AI_SOCKET_PATH=/run/opensvc-ai-agent/agent.sock
-Environment=OPENSVC_AI_MCP_ENDPOINT=http://127.0.0.1:8080/mcp
+Environment=OPENSVC_AI_MCP_SOCKET_PATH=/run/opensvc-daemon-mcp/mcp.sock
 Environment=OPENSVC_AI_JWT_VERIFY_KEY_FILE=/etc/opensvc-ai/cluster-ca.pem
 Environment=OPENSVC_AI_CONVERSATION_DB_PATH=/var/lib/opensvc-ai-agent/conversations.db
 EnvironmentFile=/etc/opensvc-ai/agent-llm.env

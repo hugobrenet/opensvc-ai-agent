@@ -79,7 +79,11 @@ prompts, grants, audit records, and partial model output are never persisted.
 
 | Variable | Description |
 | --- | --- |
-| `OPENSVC_AI_MCP_ENDPOINT` | Streamable HTTP MCP endpoint used for request-scoped sessions. |
+| `OPENSVC_AI_MCP_SOCKET_PATH` | MCP Unix socket path, default `/run/opensvc-daemon-mcp/mcp.sock`. |
+
+The agent carries Streamable HTTP over this socket. Its internal HTTP URL is
+synthetic: the transport disables proxies and always dials the configured Unix
+path. The delegated JWT remains attached to every MCP request.
 
 ## OpenSVC authentication
 
@@ -125,7 +129,7 @@ structure.
 
 ## Run
 
-Configure the generic LLM variables, `OPENSVC_AI_MCP_ENDPOINT`, and then run:
+Configure the generic LLM variables and then run:
 
 ```bash
 go run ./cmd/opensvc-ai-agentd
@@ -253,7 +257,7 @@ git diff --check
 ```
 
 An opt-in integration test can validate the authenticated client against a
-running OpenSVC MCP server. Export `OPENSVC_AI_TEST_MCP_ENDPOINT` and
+running OpenSVC MCP server. Export `OPENSVC_AI_TEST_MCP_SOCKET_PATH` and
 `OPENSVC_AI_TEST_MCP_JWT`, then run:
 
 ```bash
