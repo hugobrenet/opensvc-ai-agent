@@ -14,6 +14,10 @@ const (
 	EventToolFinished EventType = "tool_finished"
 	EventUsage        EventType = "usage"
 	EventCompleted    EventType = "completed"
+	// EventConfirmationRequired ends a turn that waits for the user to
+	// confirm a tool call. The conversation service emits it once the
+	// suspended turn is stored.
+	EventConfirmationRequired EventType = "confirmation_required"
 )
 
 type Event struct {
@@ -23,6 +27,7 @@ type Event struct {
 	ToolError    bool
 	Usage        *llm.Usage
 	FinishReason llm.FinishReason
+	Confirmation *Confirmation
 	Iteration    int
 }
 
@@ -52,6 +57,12 @@ func (e Event) Validate() error {
 	case EventCompleted:
 		if e.FinishReason == "" || e.TextDelta != "" || e.ToolName != "" || e.Usage != nil || e.ToolError {
 			return fmt.Errorf("invalid completed event")
+		}
+	case EventConfirmationRequired:
+		c := e.Confirmation
+		if c == nil || c.ID == "" || c.TurnID == "" || c.ToolName == "" || c.ExpiresAt.IsZero() || len(c.Arguments) == 0 ||
+			e.TextDelta != "" || e.ToolName != "" || e.Usage != nil || e.FinishReason != "" || e.ToolError {
+			return fmt.Errorf("invalid confirmation required event")
 		}
 	default:
 		return fmt.Errorf("unsupported agent event type %q", e.Type)

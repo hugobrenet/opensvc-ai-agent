@@ -43,8 +43,10 @@ OPENSVC_AI_LLM_AUTH_MODE=bearer
 OPENSVC_AI_LLM_API_TOKEN=replace-me
 ```
 
-Replace the example values. Use `chat_completions` instead of `responses` when
-required by the provider. For a provider without authentication, set
+Replace the example values. The conversation database is created on first
+start. The agent refuses a database written by another schema version: remove
+the file to start with an empty one. Use `chat_completions` instead of
+`responses` when required by the provider. For a provider without authentication, set
 `OPENSVC_AI_LLM_AUTH_MODE=none` and omit the API token.
 
 For the Anthropic Messages API, use:

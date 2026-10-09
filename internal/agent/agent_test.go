@@ -330,8 +330,19 @@ type fakeSession struct {
 	connectedWithJWT bool
 }
 
+// ListTools announces a tool declared without annotations as read-only, as a
+// diagnostic tool is; the confirmation tests declare their annotations.
 func (s *fakeSession) ListTools(context.Context) ([]*mcp.Tool, error) {
-	return s.tools, nil
+	tools := make([]*mcp.Tool, 0, len(s.tools))
+	for _, tool := range s.tools {
+		if tool != nil && tool.Annotations == nil {
+			copy := *tool
+			copy.Annotations = &mcp.ToolAnnotations{ReadOnlyHint: true}
+			tool = &copy
+		}
+		tools = append(tools, tool)
+	}
+	return tools, nil
 }
 
 func (s *fakeSession) CallTool(_ context.Context, name string, arguments map[string]any) (*mcp.CallToolResult, error) {

@@ -23,11 +23,15 @@ const (
 	DefaultHistoryMessages   = 128
 	DefaultHistoryBytes      = 1 << 20
 	DefaultExpiryDeleteBatch = 100
-	maxServicePromptBytes    = 32 << 10
+	// DefaultConfirmationLifetime is how long a tool call waits for the
+	// decision of the user before its turn fails without running it.
+	DefaultConfirmationLifetime = 10 * time.Minute
+	maxServicePromptBytes       = 32 << 10
 )
 
 type TurnRunner interface {
 	RunTurn(context.Context, []llm.Message, string, agent.EmitFunc) (agent.TurnResult, error)
+	ResumeTurn(context.Context, []llm.Message, agent.SuspendedTurn, agent.Decision, agent.EmitFunc) (agent.TurnResult, error)
 }
 
 type ServiceConfig struct {
@@ -37,6 +41,9 @@ type ServiceConfig struct {
 	MaxHistoryMessages int
 	MaxHistoryBytes    int
 	ExpiryDeleteBatch  int
+	// ConfirmationLifetime bounds the wait for the decision of the user on
+	// a tool call requiring confirmation.
+	ConfirmationLifetime time.Duration
 }
 
 type Service struct {
@@ -56,7 +63,7 @@ func NewService(store Store, runner TurnRunner, config ServiceConfig) (*Service,
 	}
 	config = withServiceDefaults(config)
 	if config.Lifetime <= 0 || config.ListLimit <= 0 || config.FinalizeTimeout <= 0 ||
-		config.MaxHistoryMessages <= 0 || config.MaxHistoryBytes <= 0 || config.ExpiryDeleteBatch <= 0 {
+		config.MaxHistoryMessages <= 0 || config.MaxHistoryBytes <= 0 || config.ExpiryDeleteBatch <= 0 || config.ConfirmationLifetime <= 0 {
 		return nil, fmt.Errorf("conversation service limits must be positive")
 	}
 	return &Service{store: store, runner: runner, config: config, now: time.Now, newID: randomID}, nil
@@ -80,6 +87,9 @@ func withServiceDefaults(config ServiceConfig) ServiceConfig {
 	}
 	if config.ExpiryDeleteBatch == 0 {
 		config.ExpiryDeleteBatch = DefaultExpiryDeleteBatch
+	}
+	if config.ConfirmationLifetime == 0 {
+		config.ConfirmationLifetime = DefaultConfirmationLifetime
 	}
 	return config
 }
@@ -200,6 +210,54 @@ func (s *Service) PrepareTurn(ctx context.Context, identity auth.Identity, conve
 	}, nil
 }
 
+// PrepareConfirmation consumes the confirmation a suspended turn waits on and
+// returns the execution that resumes the turn with the decision of the user.
+// The decision applies to the call stored with the confirmation, never to
+// arguments supplied with the decision.
+func (s *Service) PrepareConfirmation(ctx context.Context, identity auth.Identity, conversationID string, turnID string, confirmationID string, decision agent.Decision) (TurnExecution, error) {
+	if !decision.Valid() {
+		return nil, fmt.Errorf("%w: invalid confirmation decision", ErrInvalid)
+	}
+	item, err := s.Get(ctx, identity, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	pending, err := s.store.ClaimConfirmation(ctx, item.Owner, item.ID, turnID, confirmationID, s.now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	var state agent.SuspendedTurn
+	if err := json.Unmarshal(pending.State, &state); err != nil {
+		return nil, errors.Join(fmt.Errorf("decode suspended turn: %w", err), s.failTurn(item.Owner, item.ID, turnID, TurnFailed, "confirmation_invalid"))
+	}
+	call, err := state.PendingCall()
+	if err != nil || call.Name != pending.ToolName || agent.ArgumentsHash(call.Arguments) != pending.ArgumentsHash {
+		return nil, errors.Join(fmt.Errorf("suspended turn does not hold the confirmed call"), s.failTurn(item.Owner, item.ID, turnID, TurnFailed, "confirmation_invalid"))
+	}
+	history, err := s.store.LoadHistory(ctx, item.Owner, item.ID)
+	if err != nil {
+		return nil, errors.Join(err, s.failTurn(item.Owner, item.ID, turnID, TurnFailed, "history_failed"))
+	}
+	history, err = boundHistory(history, s.config.MaxHistoryMessages, s.config.MaxHistoryBytes)
+	if err != nil {
+		return nil, errors.Join(err, s.failTurn(item.Owner, item.ID, turnID, TurnFailed, "history_invalid"))
+	}
+	return &PreparedTurn{
+		service: s, owner: item.Owner, conversationID: item.ID, turnID: turnID,
+		history: history, resume: &state, decision: decision,
+	}, nil
+}
+
+// PendingConfirmation returns the unexpired confirmation the conversation
+// waits on, or nil, for a client to show it again.
+func (s *Service) PendingConfirmation(ctx context.Context, identity auth.Identity, conversationID string) (*PendingConfirmation, error) {
+	item, err := s.Get(ctx, identity, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.GetPendingConfirmation(ctx, item.Owner, item.ID, s.now().UTC())
+}
+
 func (s *Service) Recover(ctx context.Context) (int64, error) {
 	return s.store.RecoverInterrupted(ctx, s.now().UTC())
 }
@@ -229,6 +287,8 @@ type PreparedTurn struct {
 	turnID         string
 	prompt         string
 	history        []llm.Message
+	resume         *agent.SuspendedTurn
+	decision       agent.Decision
 	mu             sync.Mutex
 	claimed        bool
 }
@@ -242,7 +302,7 @@ func (t *PreparedTurn) Run(ctx context.Context, emit agent.EmitFunc) error {
 		return errors.Join(err, t.service.failTurn(t.owner, t.conversationID, t.turnID, TurnFailed, "consumer_invalid"))
 	}
 	var completedEvent *agent.Event
-	result, runErr := t.service.runner.RunTurn(ctx, t.history, t.prompt, func(event agent.Event) error {
+	forward := func(event agent.Event) error {
 		if event.Type == agent.EventCompleted {
 			if completedEvent != nil {
 				return errors.New("conversation runner emitted multiple completion events")
@@ -251,11 +311,28 @@ func (t *PreparedTurn) Run(ctx context.Context, emit agent.EmitFunc) error {
 			completedEvent = &copy
 			return nil
 		}
+		if event.Type == agent.EventConfirmationRequired {
+			return errors.New("conversation runner emitted a confirmation request")
+		}
 		return emit(event)
-	})
+	}
+	var result agent.TurnResult
+	var runErr error
+	if t.resume != nil {
+		result, runErr = t.service.runner.ResumeTurn(ctx, t.history, *t.resume, t.decision, forward)
+	} else {
+		result, runErr = t.service.runner.RunTurn(ctx, t.history, t.prompt, forward)
+	}
 	if runErr != nil {
 		status, code := turnFailure(runErr, ctx.Err())
 		return errors.Join(runErr, t.service.failTurn(t.owner, t.conversationID, t.turnID, status, code))
+	}
+	if result.Suspended != nil {
+		if completedEvent != nil {
+			err := errors.New("conversation turn both completed and suspended")
+			return errors.Join(err, t.service.failTurn(t.owner, t.conversationID, t.turnID, TurnFailed, "agent_incomplete"))
+		}
+		return t.suspend(*result.Suspended, emit)
 	}
 	if completedEvent == nil {
 		err := errors.New("conversation turn completed without a completion event")
@@ -277,6 +354,44 @@ func (t *PreparedTurn) Run(ctx context.Context, emit agent.EmitFunc) error {
 	}
 	if err := emit(*completedEvent); err != nil {
 		return fmt.Errorf("emit committed conversation completion: %w", err)
+	}
+	return nil
+}
+
+// suspend stores the turn waiting for a confirmation, then asks the client for
+// the decision of the user. The request is emitted only once stored, so a
+// client can always answer it.
+func (t *PreparedTurn) suspend(state agent.SuspendedTurn, emit agent.EmitFunc) error {
+	call, err := state.PendingCall()
+	if err != nil {
+		return errors.Join(err, t.service.failTurn(t.owner, t.conversationID, t.turnID, TurnFailed, "agent_incomplete"))
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return errors.Join(fmt.Errorf("encode suspended turn: %w", err), t.service.failTurn(t.owner, t.conversationID, t.turnID, TurnFailed, "agent_incomplete"))
+	}
+	confirmationID, err := t.service.newID()
+	if err != nil {
+		return errors.Join(fmt.Errorf("generate confirmation ID: %w", err), t.service.failTurn(t.owner, t.conversationID, t.turnID, TurnFailed, "agent_incomplete"))
+	}
+	createdAt := t.service.now().UTC()
+	pending := PendingConfirmation{
+		ConversationID: t.conversationID, TurnID: t.turnID, ConfirmationID: confirmationID,
+		ToolName: call.Name, ToolTitle: state.ToolTitle, Arguments: call.Arguments,
+		ArgumentsHash: agent.ArgumentsHash(call.Arguments), State: encoded,
+		CreatedAt: createdAt, ExpiresAt: createdAt.Add(t.service.config.ConfirmationLifetime),
+	}
+	suspendCtx, cancel := context.WithTimeout(context.Background(), t.service.config.FinalizeTimeout)
+	suspendErr := t.service.store.SuspendTurn(suspendCtx, t.owner, pending)
+	cancel()
+	if suspendErr != nil {
+		return errors.Join(suspendErr, t.service.failTurn(t.owner, t.conversationID, t.turnID, TurnFailed, "persistence_failed"))
+	}
+	if err := emit(agent.Event{Type: agent.EventConfirmationRequired, Iteration: state.Iteration, Confirmation: &agent.Confirmation{
+		ID: confirmationID, TurnID: t.turnID, ToolName: call.Name, ToolTitle: state.ToolTitle, Destructive: true,
+		Arguments: call.Arguments, ExpiresAt: pending.ExpiresAt,
+	}}); err != nil {
+		return fmt.Errorf("emit stored confirmation request: %w", err)
 	}
 	return nil
 }

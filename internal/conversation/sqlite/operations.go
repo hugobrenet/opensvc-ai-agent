@@ -195,10 +195,13 @@ func (s *Store) BeginTurn(ctx context.Context, owner conversation.Owner, convers
 	if err := requireConversation(ctx, tx, owner, conversationID); err != nil {
 		return conversation.Turn{}, err
 	}
+	if err := failExpiredConfirmation(ctx, tx, conversationID, startedAt); err != nil {
+		return conversation.Turn{}, err
+	}
 	var count, running int
 	var maximumSequence int64
 	if err := tx.QueryRowContext(ctx, `
-SELECT COUNT(*), COALESCE(MAX(sequence), 0), COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0)
+SELECT COUNT(*), COALESCE(MAX(sequence), 0), COALESCE(SUM(CASE WHEN status IN ('running', 'awaiting_confirmation') THEN 1 ELSE 0 END), 0)
 FROM turns
 WHERE conversation_id = ?`, conversationID).Scan(&count, &maximumSequence, &running); err != nil {
 		return conversation.Turn{}, fmt.Errorf("inspect conversation turns: %w", err)

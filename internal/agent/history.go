@@ -13,6 +13,22 @@ const (
 )
 
 func prepareHistory(history []llm.Message) ([]llm.Message, error) {
+	return prepareMessages(history, llm.RoleUser)
+}
+
+// prepareSuspendedMessages validates the messages of a suspended turn: its
+// user message, then complete tool call and result pairs, the model owing the
+// next message.
+func prepareSuspendedMessages(messages []llm.Message) ([]llm.Message, error) {
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("suspended turn has no message")
+	}
+	return prepareMessages(messages, llm.RoleAssistant)
+}
+
+// prepareMessages clones and validates a message sequence ending where the
+// next message has role next.
+func prepareMessages(history []llm.Message, next llm.Role) ([]llm.Message, error) {
 	if len(history) == 0 {
 		return nil, nil
 	}
@@ -75,7 +91,7 @@ func prepareHistory(history []llm.Message) ([]llm.Message, error) {
 	if err := (llm.Request{Messages: cloned}).Validate(); err != nil {
 		return nil, fmt.Errorf("validate agent history: %w", err)
 	}
-	if err := validateHistorySequence(cloned); err != nil {
+	if err := validateHistorySequence(cloned, next); err != nil {
 		return nil, err
 	}
 	encoded, err := json.Marshal(cloned)
@@ -96,7 +112,7 @@ func addHistoryBytes(total *int, size int) error {
 	return nil
 }
 
-func validateHistorySequence(history []llm.Message) error {
+func validateHistorySequence(history []llm.Message, next llm.Role) error {
 	expectedRole := llm.RoleUser
 	var pendingCalls []llm.ToolCall
 	for index, message := range history {
@@ -122,8 +138,11 @@ func validateHistorySequence(history []llm.Message) error {
 			pendingCalls = nil
 		}
 	}
-	if expectedRole != llm.RoleUser {
-		return fmt.Errorf("agent history ends before a final assistant message")
+	if expectedRole != next {
+		if next == llm.RoleUser {
+			return fmt.Errorf("agent history ends before a final assistant message")
+		}
+		return fmt.Errorf("suspended turn messages do not end with complete tool results")
 	}
 	return nil
 }

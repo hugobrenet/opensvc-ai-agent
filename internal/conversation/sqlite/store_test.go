@@ -359,7 +359,8 @@ func TestOpenRejectsUnsafeFilesAndUnsupportedSchema(t *testing.T) {
 	})
 	t.Run("unsupported schema", func(t *testing.T) {
 		store, path := openTestStore(t, Config{})
-		if _, err := store.db.ExecContext(t.Context(), "PRAGMA user_version = 2"); err != nil {
+		// The previous schema is refused, not converted.
+		if _, err := store.db.ExecContext(t.Context(), "PRAGMA user_version = 1"); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.Close(); err != nil {

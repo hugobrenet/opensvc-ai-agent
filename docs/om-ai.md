@@ -276,7 +276,11 @@ cannot be resumed. Foreign ownership is deliberately reported as not found.
 ### Conversation busy
 
 Only one turn can run in a conversation at a time. Wait for the active turn to
-finish or cancel it before retrying.
+finish or cancel it before retrying. A turn waiting for the confirmation of a
+destructive action also keeps the conversation busy until the action is
+confirmed, rejected or expires; see
+[action confirmation](webapp.md#action-confirmation), which `om ai` does not
+handle yet.
 
 ### Turn timeout
 

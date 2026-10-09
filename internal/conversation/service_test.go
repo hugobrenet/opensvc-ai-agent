@@ -174,6 +174,10 @@ func (f turnRunnerFunc) RunTurn(ctx context.Context, history []llm.Message, prom
 	return f(ctx, history, prompt, emit)
 }
 
+func (f turnRunnerFunc) ResumeTurn(context.Context, []llm.Message, agent.SuspendedTurn, agent.Decision, agent.EmitFunc) (agent.TurnResult, error) {
+	return agent.TurnResult{}, errors.New("this runner does not resume turns")
+}
+
 type serviceTestStore struct {
 	item              Conversation
 	history           []llm.Message
@@ -184,6 +188,7 @@ type serviceTestStore struct {
 	completedMessages []llm.Message
 	messageQuery      MessageQuery
 	messageReads      int
+	suspended         *PendingConfirmation
 }
 
 func newServiceTestStore() *serviceTestStore {
@@ -264,3 +269,24 @@ func (s *serviceTestStore) DeleteExpired(context.Context, time.Time, int) (int64
 	return 0, nil
 }
 func (s *serviceTestStore) Close() error { return nil }
+
+func (s *serviceTestStore) SuspendTurn(_ context.Context, _ Owner, pending PendingConfirmation) error {
+	s.suspended = &pending
+	return nil
+}
+
+func (s *serviceTestStore) ClaimConfirmation(_ context.Context, _ Owner, _ string, turnID string, confirmationID string, at time.Time) (PendingConfirmation, error) {
+	if s.suspended == nil || s.suspended.TurnID != turnID || s.suspended.ConfirmationID != confirmationID {
+		return PendingConfirmation{}, ErrNotPending
+	}
+	pending := *s.suspended
+	s.suspended = nil
+	if !pending.ExpiresAt.After(at) {
+		return PendingConfirmation{}, ErrConfirmationExpired
+	}
+	return pending, nil
+}
+
+func (s *serviceTestStore) GetPendingConfirmation(context.Context, Owner, string, time.Time) (*PendingConfirmation, error) {
+	return s.suspended, nil
+}

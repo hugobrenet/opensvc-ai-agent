@@ -47,6 +47,7 @@ func NewHandler(asker Asker, conversations ConversationService, verifier auth.To
 	mux.Handle("PATCH /v1/conversations/{id}", requireAccessToken(verifier, audit, serveUpdateConversationTitle(conversations, audit)))
 	mux.Handle("DELETE /v1/conversations/{id}", requireAccessToken(verifier, audit, serveDeleteConversation(conversations, audit)))
 	mux.Handle("POST /v1/conversations/{id}/turns", requireAccessToken(verifier, audit, serveConversationTurn(conversations, limiter, audit)))
+	mux.Handle("POST /v1/conversations/{id}/turns/{turn_id}/confirmation", requireAccessToken(verifier, audit, serveConversationConfirmation(conversations, limiter, audit)))
 	handler, err := withCORS(mux, config.CORSAllowedOrigins)
 	if err != nil {
 		return nil, err

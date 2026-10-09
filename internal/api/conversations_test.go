@@ -238,6 +238,8 @@ type conversationServiceFuncs struct {
 	delete   func(context.Context, auth.Identity, string) error
 	prepare  func(context.Context, auth.Identity, string, string) (conversation.TurnExecution, error)
 	messages func(context.Context, auth.Identity, string, conversation.MessageQuery) (conversation.MessagePage, error)
+	confirm  func(context.Context, auth.Identity, string, string, string, agent.Decision) (conversation.TurnExecution, error)
+	pending  func(context.Context, auth.Identity, string) (*conversation.PendingConfirmation, error)
 }
 
 func (s conversationServiceFuncs) Create(ctx context.Context, identity auth.Identity) (conversation.Conversation, error) {
@@ -281,6 +283,21 @@ func (s conversationServiceFuncs) PrepareTurn(ctx context.Context, identity auth
 		return nil, errors.New("unexpected prepare")
 	}
 	return s.prepare(ctx, identity, id, prompt)
+}
+
+func (s conversationServiceFuncs) PrepareConfirmation(ctx context.Context, identity auth.Identity, id string, turnID string, confirmationID string, decision agent.Decision) (conversation.TurnExecution, error) {
+	if s.confirm == nil {
+		return nil, errors.New("unexpected confirmation")
+	}
+	return s.confirm(ctx, identity, id, turnID, confirmationID, decision)
+}
+
+// PendingConfirmation reports no pending confirmation unless a test sets one.
+func (s conversationServiceFuncs) PendingConfirmation(ctx context.Context, identity auth.Identity, id string) (*conversation.PendingConfirmation, error) {
+	if s.pending == nil {
+		return nil, nil
+	}
+	return s.pending(ctx, identity, id)
 }
 
 type testTurnExecution struct {

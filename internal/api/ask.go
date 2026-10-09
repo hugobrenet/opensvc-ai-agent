@@ -38,15 +38,32 @@ type AskUsage struct {
 }
 
 type AskEvent struct {
-	Type         string    `json:"type"`
-	Iteration    int       `json:"iteration,omitempty"`
-	TextDelta    string    `json:"text_delta,omitempty"`
-	ToolName     string    `json:"tool_name,omitempty"`
-	ToolError    *bool     `json:"tool_error,omitempty"`
-	Usage        *AskUsage `json:"usage,omitempty"`
-	FinishReason string    `json:"finish_reason,omitempty"`
-	Code         string    `json:"code,omitempty"`
-	Message      string    `json:"message,omitempty"`
+	Type         string           `json:"type"`
+	Iteration    int              `json:"iteration,omitempty"`
+	TextDelta    string           `json:"text_delta,omitempty"`
+	ToolName     string           `json:"tool_name,omitempty"`
+	ToolError    *bool            `json:"tool_error,omitempty"`
+	Usage        *AskUsage        `json:"usage,omitempty"`
+	FinishReason string           `json:"finish_reason,omitempty"`
+	Confirmation *AskConfirmation `json:"confirmation,omitempty"`
+	Code         string           `json:"code,omitempty"`
+	Message      string           `json:"message,omitempty"`
+}
+
+// AskConfirmation is a tool call waiting for the decision of the user: the
+// exact call that runs if the user approves it.
+type AskConfirmation struct {
+	ID        string              `json:"id"`
+	TurnID    string              `json:"turn_id"`
+	Tool      AskConfirmationTool `json:"tool"`
+	Arguments json.RawMessage     `json:"arguments"`
+	ExpiresAt time.Time           `json:"expires_at"`
+}
+
+type AskConfirmationTool struct {
+	Name        string `json:"name"`
+	Title       string `json:"title"`
+	Destructive bool   `json:"destructive"`
 }
 
 type ErrorResponse struct {
@@ -170,6 +187,15 @@ func streamAgent(response http.ResponseWriter, request *http.Request, audit audi
 		case agent.EventCompleted:
 			completed = true
 			finishReason = string(event.FinishReason)
+		case agent.EventConfirmationRequired:
+			// The turn ends here, stored, until the user decides.
+			completed = true
+			finishReason = string(agent.EventConfirmationRequired)
+			audit.event(request.Context(), "confirmation_requested",
+				slog.String("tool_name", event.Confirmation.ToolName),
+				slog.String("turn_id", boundedAuditID(event.Confirmation.TurnID)),
+				slog.Int("iteration", event.Iteration),
+			)
 		}
 	}
 	err := run(func(event agent.Event) error {
@@ -338,6 +364,12 @@ func newAskEvent(event agent.Event) AskEvent {
 		}
 	case agent.EventCompleted:
 		streamEvent.FinishReason = string(event.FinishReason)
+	case agent.EventConfirmationRequired:
+		c := event.Confirmation
+		streamEvent.Confirmation = &AskConfirmation{
+			ID: c.ID, TurnID: c.TurnID, Arguments: c.Arguments, ExpiresAt: c.ExpiresAt,
+			Tool: AskConfirmationTool{Name: c.ToolName, Title: c.ToolTitle, Destructive: c.Destructive},
+		}
 	}
 	return streamEvent
 }

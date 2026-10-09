@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 //go:embed schema.sql
 var schemaSQL string
@@ -43,7 +43,7 @@ func initializeSchema(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("set conversation SQLite schema version: %w", err)
 		}
 	default:
-		return fmt.Errorf("conversation SQLite schema version %d is unsupported", current)
+		return fmt.Errorf("conversation SQLite schema version %d is unsupported, version %d is required: remove the database to start with an empty one", current, schemaVersion)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit conversation SQLite schema initialization: %w", err)

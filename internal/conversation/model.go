@@ -1,6 +1,9 @@
 package conversation
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Owner struct {
 	ClusterID string
@@ -21,11 +24,14 @@ type Conversation struct {
 type TurnStatus string
 
 const (
-	TurnRunning     TurnStatus = "running"
-	TurnCompleted   TurnStatus = "completed"
-	TurnFailed      TurnStatus = "failed"
-	TurnCanceled    TurnStatus = "canceled"
-	TurnInterrupted TurnStatus = "interrupted"
+	TurnRunning TurnStatus = "running"
+	// TurnAwaitingConfirmation is a turn suspended until the user confirms
+	// or rejects the tool call it waits on.
+	TurnAwaitingConfirmation TurnStatus = "awaiting_confirmation"
+	TurnCompleted            TurnStatus = "completed"
+	TurnFailed               TurnStatus = "failed"
+	TurnCanceled             TurnStatus = "canceled"
+	TurnInterrupted          TurnStatus = "interrupted"
 )
 
 type Turn struct {
@@ -36,4 +42,19 @@ type Turn struct {
 	ErrorCode      string
 	StartedAt      time.Time
 	CompletedAt    *time.Time
+}
+
+// PendingConfirmation is the tool call a suspended turn waits on, with the
+// encoded agent state the turn resumes from.
+type PendingConfirmation struct {
+	ConversationID string
+	TurnID         string
+	ConfirmationID string
+	ToolName       string
+	ToolTitle      string
+	Arguments      json.RawMessage
+	ArgumentsHash  string
+	State          []byte
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
 }

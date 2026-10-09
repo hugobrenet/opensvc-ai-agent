@@ -45,7 +45,11 @@ attribution notices.
 - `internal/mcpclient`: local Unix socket transport, remote whoami verification,
   request-scoped MCP sessions and bounded tool discovery/results.
 - `internal/agent`: provider-neutral turn loop, history validation, system
-  prompt and sequential execution of model-requested MCP tools.
+  prompt and sequential execution of model-requested MCP tools. A tool call
+  that MCP annotates destructive (`destructiveHint: true`, or not read-only
+  without the hint) never runs on the model's request alone: the turn is
+  suspended until the user confirms or rejects it through the API, and the
+  decision applies to the exact stored call.
 - `internal/llm`: neutral model contracts and events. Protocol adapters under
   `responses`, `chatcompletions` and `messages` implement these contracts;
   the neutral package must not import its adapters.

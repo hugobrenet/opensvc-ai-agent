@@ -109,6 +109,71 @@ the smaller context window selected for model turns. Existing stored turns are
 readable without a schema change. Metadata routes and SSE remain unchanged;
 the `om ai` client does not call this new endpoint.
 
+## Action confirmation
+
+A tool that changes the cluster and that MCP annotates `destructiveHint: true`
+never runs on the model's request alone: the user confirms or rejects it. A
+tool that is not read-only and declares no `destructiveHint` is treated as
+destructive, as the MCP specification defaults it. Read-only tools and
+non-destructive actions run without confirmation.
+
+### Request
+
+When the model calls such a tool, the agent stores the turn in the
+`awaiting_confirmation` state without running the call, then ends the turn
+stream with:
+
+```text
+event: confirmation_required
+data: {"type":"confirmation_required","iteration":1,"confirmation":{
+  "id":"<confirmation ID>","turn_id":"<turn ID>",
+  "tool":{"name":"stop_object","title":"Stop object","destructive":true},
+  "arguments":{"path":"prod/svc/web"},
+  "expires_at":"2026-10-09T17:45:00Z"}}
+```
+
+The stream then ends without `completed`. Show the tool, its title and its
+exact arguments, which are the call that runs if the user approves: take them
+from this event, not from the model text, which can describe the action
+differently. The confirmation expires after 10 minutes.
+
+### Decision
+
+```http
+POST /v1/conversations/{id}/turns/{turn_id}/confirmation
+Content-Type: application/json
+
+{"confirmation_id":"<confirmation ID>","decision":"approve"}
+```
+
+`decision` is exactly `approve` or `reject`. Any other value, an unknown field
+or a second object returns 400: a decision cannot change the arguments or add
+text for the model. The identity is verified again and must own the
+conversation. A confirmation is used once.
+
+The response is a new turn stream. Approved, the stored call runs, then the
+model continues; rejected, the model is told the action did not run, and
+answers. The stream may end with another `confirmation_required` when the
+model calls a further destructive tool.
+
+| Case | Status | Code |
+|---|---|---|
+| Invalid body or decision | 400 | `invalid_request`, `invalid_decision` |
+| Unknown or foreign conversation or turn | 404 | `conversation_not_found` |
+| No such pending confirmation, or already decided | 409 | `confirmation_not_pending` |
+| Confirmation expired | 410 | `confirmation_expired`; the turn failed and the call did not run |
+
+### While it waits
+
+- `GET /v1/conversations/{id}` returns `pending_confirmation`, with the same
+  fields as the event, while a confirmation waits: show it again after a page
+  reload.
+- A new turn returns 409 `conversation_busy` until the user decides or the
+  confirmation expires; an expired one no longer blocks the conversation.
+- A pending confirmation survives an agent restart.
+- `POST /v1/ask` cannot wait for a decision: it does not run such a call, and
+  the model is told it requires a conversation.
+
 ## CORS
 
 Set `OPENSVC_AI_CORS_ALLOWED_ORIGINS` in the agent environment and restart:

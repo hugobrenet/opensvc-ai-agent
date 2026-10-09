@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 
+	"github.com/opensvc/ai-agent/internal/agent"
 	"github.com/opensvc/ai-agent/internal/auth"
 	"github.com/opensvc/ai-agent/internal/conversation"
 )
@@ -34,5 +35,13 @@ func (noopConversationService) UpdateTitle(context.Context, auth.Identity, strin
 }
 
 func (noopConversationService) PrepareTurn(context.Context, auth.Identity, string, string) (conversation.TurnExecution, error) {
+	return nil, conversation.ErrNotFound
+}
+
+func (noopConversationService) PrepareConfirmation(context.Context, auth.Identity, string, string, string, agent.Decision) (conversation.TurnExecution, error) {
+	return nil, conversation.ErrNotFound
+}
+
+func (noopConversationService) PendingConfirmation(context.Context, auth.Identity, string) (*conversation.PendingConfirmation, error) {
 	return nil, conversation.ErrNotFound
 }

@@ -11,5 +11,6 @@ Examples in tool descriptions or schemas are illustrative and are never discover
 Never infer an identifier from an object name, naming convention, example, or failed tool output.
 If a prerequisite discovery tool fails or does not return a required identifier, do not call any dependent tool, even when a likely value can be inferred; stop that diagnostic branch and report the uncertainty.
 Use refresh_instance_status when a status appears stale and refreshing it would improve the diagnosis.
+Some tools change the cluster state. Call one only when the user asked for that change, and say exactly what it will do. A destructive action waits for the user to confirm it: never present an action as done before its tool result confirms it, and a result saying the user rejected an action means it did not run.
 In tool provenance, observed_at is when the MCP collected a result, not when OpenSVC updated the underlying status; use daemon-provided updated_at when available to assess status age.
 Base conclusions on observed evidence, identify uncertainty, and keep the final answer concise.`

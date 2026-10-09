@@ -25,6 +25,8 @@ type ConversationService interface {
 	UpdateTitle(context.Context, auth.Identity, string, string) (conversation.Conversation, error)
 	Delete(context.Context, auth.Identity, string) error
 	PrepareTurn(context.Context, auth.Identity, string, string) (conversation.TurnExecution, error)
+	PrepareConfirmation(context.Context, auth.Identity, string, string, string, agent.Decision) (conversation.TurnExecution, error)
+	PendingConfirmation(context.Context, auth.Identity, string) (*conversation.PendingConfirmation, error)
 }
 
 type ConversationResponse struct {
@@ -42,7 +44,18 @@ type ConversationTitleRequest struct {
 
 type ConversationEnvelope struct {
 	Conversation ConversationResponse `json:"conversation"`
+	// PendingConfirmation is the tool call the conversation waits on, for a
+	// client to show it again. Only the conversation read returns it.
+	PendingConfirmation *AskConfirmation `json:"pending_confirmation,omitempty"`
 }
+
+// ConfirmationRequest carries the decision of the user on one confirmation.
+type ConfirmationRequest struct {
+	ConfirmationID string `json:"confirmation_id"`
+	Decision       string `json:"decision"`
+}
+
+const maxConfirmationRequestBytes = 4 << 10
 
 type ConversationListResponse struct {
 	Conversations []ConversationResponse `json:"conversations"`
@@ -106,8 +119,20 @@ func serveGetConversation(service ConversationService, audit auditLogger) http.H
 			writeConversationError(response, request, audit, "conversation_get_rejected", err, id)
 			return
 		}
+		pending, err := service.PendingConfirmation(request.Context(), identity, id)
+		if err != nil {
+			writeConversationError(response, request, audit, "conversation_get_rejected", err, id)
+			return
+		}
+		envelope := ConversationEnvelope{Conversation: newConversationResponse(item)}
+		if pending != nil {
+			envelope.PendingConfirmation = &AskConfirmation{
+				ID: pending.ConfirmationID, TurnID: pending.TurnID, Arguments: pending.Arguments, ExpiresAt: pending.ExpiresAt,
+				Tool: AskConfirmationTool{Name: pending.ToolName, Title: pending.ToolTitle, Destructive: true},
+			}
+		}
 		audit.event(request.Context(), "conversation_read", slog.String("conversation_id", boundedAuditID(id)))
-		writeJSON(response, http.StatusOK, ConversationEnvelope{Conversation: newConversationResponse(item)})
+		writeJSON(response, http.StatusOK, envelope)
 	}
 }
 
@@ -190,6 +215,78 @@ func serveConversationTurn(service ConversationService, limiter *askLimiter, aud
 	}
 }
 
+// serveConversationConfirmation resumes a turn waiting for a confirmation with
+// the decision of the user, streaming the rest of the turn like a turn.
+func serveConversationConfirmation(service ConversationService, limiter *askLimiter, audit auditLogger) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		id := request.PathValue("id")
+		turnID := request.PathValue("turn_id")
+		attributes := []slog.Attr{slog.String("conversation_id", boundedAuditID(id)), slog.String("turn_id", boundedAuditID(turnID))}
+		confirmation, status, apiError := decodeConfirmationRequest(response, request)
+		if apiError != nil {
+			audit.event(request.Context(), "conversation_confirmation_rejected", appendAttributes(attributes,
+				slog.Int("status", status), slog.String("code", apiError.Code),
+			)...)
+			writeJSONError(response, status, apiError.Code, apiError.Message)
+			return
+		}
+		attributes = append(attributes, slog.String("decision", confirmation.Decision))
+		if !acquireAgentSlot(response, request, limiter, audit, "conversation_confirmation", attributes) {
+			return
+		}
+		defer limiter.release()
+		identity, ok := auth.IdentityFromContext(request.Context())
+		if !ok {
+			writeUnauthorized(response)
+			return
+		}
+		execution, err := service.PrepareConfirmation(request.Context(), identity, id, turnID, confirmation.ConfirmationID, agent.Decision(confirmation.Decision))
+		if err != nil {
+			status, code, message := conversationError(err)
+			audit.event(request.Context(), "conversation_confirmation_rejected", appendAttributes(attributes,
+				slog.Int("status", status), slog.String("code", code),
+			)...)
+			writeJSONError(response, status, code, message)
+			return
+		}
+		audit.event(request.Context(), "confirmation_decided", attributes...)
+		started := streamAgent(response, request, audit, "conversation_confirmation", attributes, func(emit agent.EmitFunc) error {
+			return execution.Run(request.Context(), emit)
+		})
+		if !started {
+			_ = execution.Cancel("streaming_unavailable")
+		}
+	}
+}
+
+func decodeConfirmationRequest(response http.ResponseWriter, request *http.Request) (ConfirmationRequest, int, *APIError) {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return ConfirmationRequest{}, http.StatusUnsupportedMediaType, &APIError{Code: "unsupported_media_type", Message: "Content-Type must be application/json"}
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, maxConfirmationRequestBytes)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	var confirmation ConfirmationRequest
+	if err := decoder.Decode(&confirmation); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return ConfirmationRequest{}, http.StatusRequestEntityTooLarge, &APIError{Code: "request_too_large", Message: "request body is too large"}
+		}
+		return ConfirmationRequest{}, http.StatusBadRequest, &APIError{Code: "invalid_request", Message: "request body must be a JSON object containing confirmation_id and decision"}
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return ConfirmationRequest{}, http.StatusBadRequest, &APIError{Code: "invalid_request", Message: "request body must contain one JSON object"}
+	}
+	if confirmation.ConfirmationID == "" {
+		return ConfirmationRequest{}, http.StatusBadRequest, &APIError{Code: "invalid_request", Message: "confirmation_id must not be empty"}
+	}
+	if !agent.Decision(confirmation.Decision).Valid() {
+		return ConfirmationRequest{}, http.StatusBadRequest, &APIError{Code: "invalid_decision", Message: "decision must be approve or reject"}
+	}
+	return confirmation, 0, nil
+}
+
 func newConversationResponse(item conversation.Conversation) ConversationResponse {
 	return ConversationResponse{
 		ID: item.ID, Title: item.Title, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
@@ -231,6 +328,10 @@ func writeConversationError(response http.ResponseWriter, request *http.Request,
 
 func conversationError(err error) (int, string, string) {
 	switch {
+	case errors.Is(err, conversation.ErrConfirmationExpired):
+		return http.StatusGone, "confirmation_expired", "the confirmation has expired; the action was not run"
+	case errors.Is(err, conversation.ErrNotPending):
+		return http.StatusConflict, "confirmation_not_pending", "the turn waits on no such confirmation"
 	case errors.Is(err, conversation.ErrMessageTooLarge):
 		return http.StatusRequestEntityTooLarge, "history_message_too_large", "a stored message exceeds the display page size"
 	case errors.Is(err, conversation.ErrExpired):
@@ -238,7 +339,7 @@ func conversationError(err error) (int, string, string) {
 	case errors.Is(err, conversation.ErrNotFound):
 		return http.StatusNotFound, "conversation_not_found", "the conversation was not found"
 	case errors.Is(err, conversation.ErrBusy):
-		return http.StatusConflict, "conversation_busy", "the conversation already has an active turn"
+		return http.StatusConflict, "conversation_busy", "the conversation already has an active turn or an action waiting for a decision"
 	case errors.Is(err, conversation.ErrLimit):
 		return http.StatusConflict, "conversation_limit", "the conversation limit has been reached"
 	case errors.Is(err, conversation.ErrInvalid):

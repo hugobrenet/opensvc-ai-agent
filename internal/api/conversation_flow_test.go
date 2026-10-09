@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -149,6 +150,10 @@ type apiTurnRunnerFunc func(context.Context, []llm.Message, string, agent.EmitFu
 
 func (f apiTurnRunnerFunc) RunTurn(ctx context.Context, history []llm.Message, prompt string, emit agent.EmitFunc) (agent.TurnResult, error) {
 	return f(ctx, history, prompt, emit)
+}
+
+func (f apiTurnRunnerFunc) ResumeTurn(context.Context, []llm.Message, agent.SuspendedTurn, agent.Decision, agent.EmitFunc) (agent.TurnResult, error) {
+	return agent.TurnResult{}, errors.New("this runner does not resume turns")
 }
 
 func requestWithToken(method string, path string, token string, body string) *http.Request {
